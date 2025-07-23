@@ -1,0 +1,60 @@
+# ===================================================================
+# COCONUT STAGE 1: PRETRAIN CONFIGURATION
+#
+# 🎯 DESIGN PHILOSOPHY:
+#   - Goal: Build robust and well-separated feature space
+#   - Strategy: Hybrid Loss (ArcFace + SupCon) without W2ML
+#   - Rationale: Prevent overfitting to specific dataset characteristics
+#
+# 🚫 WHY NOT W2ML in PRETRAIN:
+#   1. W2ML focuses on hard samples → risk of learning dataset noise
+#   2. Generalization is priority → stable learning preferred
+#   3. Foundation must be robust → avoid premature specialization
+#
+# ✅ WHY HYBRID LOSS:
+#   1. ArcFace: Creates large inter-class margins
+#   2. SupCon: Enhances intra-class cohesion  
+#   3. Combination: Proven effective in CCNet paper
+# ===================================================================
+
+Dataset:
+  type: Tongji_Pretrain
+  train_set_file: './data/train_tongji.txt'
+  test_set_file: './data/test_tongji.txt'
+  height: 128
+  width: 128
+  use_angle_normalization: False
+
+PalmRecognizer:
+  architecture: CCNet
+  num_classes: 600
+  com_weight: 0.8
+  learning_rate: 0.001
+  batch_size: 1024
+  feature_dimension: 2048
+
+Training:
+  batch_size: 1024
+  epoch_num: 3000
+  lr: 0.001
+  redstep: 500
+  gpu_id: 0
+
+# 🔥 하이브리드 손실 함수 설정 (CCNet 검증된 비율)
+Loss:
+  temp: 0.07
+  weight1: 0.8  # ArcFace 가중치 (분류 + 마진)
+  weight2: 0.2  # SupCon 가중치 (특징 구조화)
+
+Paths:
+  checkpoint_path: './results/pretrained_models/'
+  results_path: './results/pretrain_eval/'
+  save_interval: 500
+  test_interval: 1000
+
+Design_Documentation:
+  stage1_philosophy: "Stable hybrid learning for robust generalization"
+  loss_strategy: "ArcFace (0.8) + SupCon (0.2) hybrid"
+  w2ml_exclusion_rationale: "Prevents overfitting to dataset-specific noise"
+  mathematical_basis: "CCNet validated 0.8:0.2 ratio"
+  next_stage: "W2ML-based adaptation in Stage 2"

@@ -1,0 +1,83 @@
+ContinualLearner:
+  adaptation: true
+  adaptation_epochs: 3
+  adaptive_weight_scheduling: true
+  enable_w2ml: true
+  hard_negative_weight: 2.0
+  hard_positive_weight: 1.5
+  new_data_weight: 0.5
+  replay_weight: 0.5
+  similarity_threshold_negative: 0.7
+  similarity_threshold_positive: 0.5
+  sync_frequency: 10
+  # 🔥 중간 모델 저장 빈도 설정 (매 N스텝마다)
+  intermediate_save_frequency: 50
+Dataset:
+  dataset_path: /content/drive/MyDrive/BMPD/train_BMPD.txt
+  height: 128
+  type: BMPD_Live
+  use_angle_normalization: false
+  width: 128
+Design_Documentation:
+  current_stage: 1️⃣ Standard W2ML (검증된 안정성)
+  final_stage: 3️⃣ Extreme W2ML (최고 성능)
+  implementation_class: CompleteW2MLSupConLoss
+  mathematical_basis: W2ML philosophy with progressive enhancement
+  next_stage: 2️⃣ Heavy W2ML (더 강한 성능)
+  safety_first: 안정성 우선, 검증된 단계별 적용
+  stage2_philosophy: Progressive Complete W2ML adaptation
+  tuning_strategy: Standard → Heavy → Extreme 점진적 업그레이드
+  verification_status:  
+  custom_save_path: /content/drive/MyDrive/CoCoNut_STAR  # 🔥 사용자 지정 저장 경로
+Loss:
+  enable_w2ml_logging: true # 학습 중 발생한 통계들 출력 여부
+  hard_negative_weight: 2.0 # 하드 negative 샘플의 손실 기여도를 조절
+  hard_positive_weight: 2.0 # 하드 positive 샘플의 손실 기여도
+  negative_loss_weight: 0.3 # 전체 손실에서 negative pair가 차지하는 비율, 나머지 70%는 postive 샘플 학습에 사용
+  similarity_threshold_neg: 0.7 # Cosine similarity가 이보다 크면 → hard negative 로 간주
+  similarity_threshold_pos: 0.1 # Cosine similarity가 이보다 작으면 → hard positive
+  temp: 0.07
+  type: CompleteW2MLSupConLoss # 실제 사용할 손실 함수 클래스 이름
+  w2ml_temperature: 0.07 # 대조 학습의 softmax temperature, temp는 SupCon에서 쓰이고, w2ml_temperature는 CompleteW2ML 구현에서 별도 이름으로 지정된 것
+PalmRecognizer:
+  architecture: CCNet
+  batch_size: 10
+  com_weight: 0.8
+  feature_dimension: 2048
+  learning_rate: 0.001
+  load_weights_folder: /content/drive/MyDrive/CCNet_Transfer_Results/checkpoints/model_weights_only.pth
+  num_classes: 600
+ReplayBuffer:
+  diversity_update_frequency: 5 # 몇 번의 버퍼 업데이트마다 diversity 평가를 갱신할지
+  enable_smart_sampling: true # 하드 샘플, 클래스 다양성 등을 고려한 “지능형 샘플링” 활성화 여부
+  feature_extraction_for_diversity: true # 다양성 평가를 위해 임베딩을 사용할지
+  hard_sample_ratio: 0.3 # contrastive learning 배치에서 하드 샘플의 비율
+  max_buffer_size: 50 # 버퍼에 저장할 수 있는 최대 샘플 수
+  maximize_diversity: true # 버퍼 유지 시 다양성 우선 정책 사용 여부, similarity_threshold를 넘는 경우 "중복"으로 간주
+  similarity_threshold: 0.95 # 샘플 간 cosine similarity가 이 이상이면 중복으로 간주
+  storage_path: ./results/replay_buffer_state/ # 버퍼 상태를 저장할 기본 경로 (local 디스크), checkpoint 저장 시 .pkl 파일 형태로 사용됨
+  model_save_path: /content/drive/MyDrive/CoCoNut_STAR # 모델과 통계 저장의 사용자 지정 경로
+W2ML_Experiment:
+  analysis_window_size: 20
+  enable_logging: true
+  hard_sample_threshold: 0.8
+  log_frequency: 50
+  mathematical_verification: true
+  performance_monitoring: true
+  progression_tracking: true
+  save_difficulty_history: true
+  stability_check: true
+  track_hard_negatives: true
+  track_weight_amplification: true
+# 🔥 모델 저장 설정
+ModelSaving:
+  # 최종 모델 저장 경로
+  final_save_path: /content/drive/MyDrive/CoCoNut_STAR
+  # 중간 저장 빈도 (매 N스텝마다, 0이면 비활성화)
+  intermediate_save_frequency: 100
+  # 중간 저장 활성화 여부
+  enable_intermediate_save: true
+  # 타임스탬프 포함 여부
+  include_timestamp: true
+  # README 자동 생성 여부
+  auto_generate_readme: true
