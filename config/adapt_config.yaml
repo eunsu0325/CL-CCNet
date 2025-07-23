@@ -1,4 +1,4 @@
-# config/adapt_config.yaml - W2ML 제거된 단순 버전
+# config/adapt_config.yaml - 파라미터 단순화 버전
 # CoCoNut Stage 2: Continual Learning with Intelligent Replay Buffer
 
 # =================================================================
@@ -20,7 +20,6 @@ Dataset:
   height: 128
   width: 128
   use_angle_normalization: false
-  # 온라인 적응용 데이터 경로
   dataset_path: "./data/test_tongji.txt"
 
 # =================================================================
@@ -33,7 +32,6 @@ PalmRecognizer:
   feature_dimension: 2048
   learning_rate: 0.001
   batch_size: 10
-  # Stage 1에서 학습된 가중치 로드
   load_weights_folder: "./results/checkpoint/net_params_best.pth"
 
 # =================================================================
@@ -41,20 +39,24 @@ PalmRecognizer:
 # =================================================================
 ContinualLearner:
   adaptation: true
-  adaptation_epochs: 3
+  adaptation_epochs: 2
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
   learning_rate: 0.001
   batch_size: 10
+  
+  # Hard Mining 설정 (단순화)
+  enable_hard_mining: true
+  hard_mining_ratio: 0.3  # 30% hard samples (고정)
 
 # =================================================================
 # REPLAY BUFFER CONFIGURATION (핵심 기여)
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
-  max_buffer_size: 1000
+  max_buffer_size: 50
   similarity_threshold: 0.85
   storage_path: "./results/replay_buffer/"
   feature_extraction_for_diversity: true
@@ -63,16 +65,40 @@ ReplayBuffer:
   model_save_path: "./results/models/"
 
 # =================================================================
+# DATA AUGMENTATION (3가지만)
+# =================================================================
+DataAugmentation:
+  enable_augmentation: true
+  augmentation_probability: 0.4
+  
+  # 1. 기하학적 증강
+  enable_geometric: true
+  geometric_probability: 0.3
+  max_rotation_degrees: 3
+  max_translation_ratio: 0.05  # 5% of image size
+  
+  # 2. 해상도 적응 증강
+  enable_resolution_adaptation: true
+  resolution_probability: 0.3
+  intermediate_resolutions:
+    - [64, 64]    # 저해상도 시뮬레이션
+    - [96, 96]    # 중간 해상도
+    - [160, 160]  # 고해상도
+  resize_methods: ["nearest", "bilinear", "bicubic", "lanczos"]
+  
+  # 3. 노이즈 증강
+  enable_noise: true
+  noise_probability: 0.3
+  noise_std_range: [0.01, 0.03]
+
+# =================================================================
 # LOSS CONFIGURATION (단순화됨)
 # =================================================================
 Loss:
   temp: 0.07
   type: "SupConLoss"
-  # Stage 1 하이브리드 손실 (참고용)
-  weight1: 0.8  # ArcFace
+  weight1: 0.8  # ArcFace (Stage 1 참고용)
   weight2: 0.2  # SupCon
-
-# W2ML_Experiment 섹션 완전 제거
 
 # =================================================================
 # MODEL SAVING CONFIGURATION

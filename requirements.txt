@@ -1,62 +1,94 @@
-# requirements.txt - 개선된 라이브러리 목록
+# requirements.txt - CoCoNut Dependencies
+# Intelligent Replay Buffer for Continual Palmprint Recognition
 
-#===================================================================
-# COCONUT: Continual & Competition Network with Updatable Templates
+# =================================================================
+# CORE DEEP LEARNING FRAMEWORKS
+# =================================================================
+torch>=1.12.0
+torchvision>=0.13.0
+torchaudio>=0.12.0
 
-# 프로젝트 실행에 필요한 라이브러리 목록입니다.
+# =================================================================
+# SCIENTIFIC COMPUTING
+# =================================================================
+numpy>=1.21.0
+scipy>=1.8.0
 
-# INSTALLATION:
-# pip install -r requirements.txt
-
-# 🔥 IMPORTANT: Choose either faiss-gpu OR faiss-cpu (not both)
-#===================================================================
-
-# --- 1. 핵심 딥러닝 라이브러리 ---
-torch==1.10.0
-torchvision==0.11.1
-setuptools==58.2.0
-
-# --- 2. 🔥 COCONUT 핵심 라이브러리 ---
-# GPU 사용 시 (권장)
+# =================================================================
+# FAISS (핵심 기여 - 고성능 유사도 검색)
+# =================================================================
+# GPU 환경 (Jetson Orin, 고성능 서버)
 faiss-gpu>=1.7.0
-# CPU 사용 시 (위 줄을 주석처리하고 아래 줄 사용)
+
+# CPU 환경 (대안, 위의 faiss-gpu 설치 실패시 주석 해제)
 # faiss-cpu>=1.7.0
 
-# YAML 설정 파일 파싱
-pyyaml>=5.4.0
-
-# --- 3. 과학 계산 및 데이터 분석 ---
-numpy>=1.21.0
-scipy>=1.7.0
-pandas>=1.3.0
-scikit-learn>=1.0.0
-
-# --- 4. 이미지 처리 ---
-Pillow>=8.3.0
+# =================================================================
+# IMAGE PROCESSING & COMPUTER VISION
+# =================================================================
 opencv-python>=4.5.0
-scikit-image>=0.18.0
+Pillow>=8.3.0
 
-# --- 5. 유틸리티 및 시각화 ---
+# =================================================================
+# DATA HANDLING & UTILITIES
+# =================================================================
+pandas>=1.3.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# =================================================================
+# CONFIGURATION & LOGGING
+# =================================================================
+PyYAML>=6.0
 tqdm>=4.62.0
-matplotlib>=3.4.0
+colorlog>=6.6.0
 
-# --- 6. W2ML 수학적 검증용 (선택사항) ---
-# sympy>=1.8.0  # 수식 검증용
-# jupyter>=1.0.0  # 실험 노트북용
+# =================================================================
+# BIOMETRIC & PALMPRINT SPECIFIC
+# =================================================================
+scikit-image>=0.18.0
+skimage2tensor>=0.1.0
 
-# ===================================================================
-# INSTALLATION GUIDE:
+# =================================================================
+# MACHINE LEARNING UTILITIES
+# =================================================================
+scikit-learn>=1.0.0
+tensorboard>=2.8.0
+
+# =================================================================
+# SYSTEM & PATH UTILITIES
+# =================================================================
+pathlib2>=2.3.6
+dataclasses>=0.6; python_version<"3.7"
+
+# =================================================================
+# OPTIONAL: JUPYTER NOTEBOOK SUPPORT
+# =================================================================
+jupyter>=1.0.0
+ipywidgets>=7.6.0
+
+# =================================================================
+# DEVELOPMENT TOOLS (선택사항)
+# =================================================================
+# pytest>=6.2.0
+# black>=21.0.0
+# flake8>=3.9.0
+
+# =================================================================
+# PLATFORM SPECIFIC NOTES
+# =================================================================
+# For Jetson Orin/Nano:
+# - Install PyTorch with CUDA support from NVIDIA's wheel
+# - pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# 
+# For CPU-only systems:
+# - Use faiss-cpu instead of faiss-gpu
+# - Standard PyTorch CPU version is sufficient
 #
-# 1. GPU 환경 (권장):
-#    pip install torch==1.10.0 torchvision==0.11.1 -f https://download.pytorch.org/whl/cu111/torch_stable.html
-#    pip install faiss-gpu
-#    pip install -r requirements.txt
-#
-# 2. CPU 환경:
-#    pip install torch==1.10.0 torchvision==0.11.1 -f https://download.pytorch.org/whl/cpu/torch_stable.html
-#    pip install faiss-cpu
-#    pip install -r requirements.txt
-#
-# 3. 검증:
-#    python -c "import torch, faiss; print('✅ Installation successful')"
-# ===================================================================
+# For development:
+# - Add jupyter, pytest, black for better development experience
+# 
+# Memory requirements:
+# - Minimum 4GB RAM (Jetson Nano with optimizations)
+# - Recommended 8GB+ RAM (Jetson Orin, desktop)
+# - GPU memory: 2GB+ for CUDA acceleration
