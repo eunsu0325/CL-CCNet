@@ -1,8 +1,7 @@
-# config/adapt_config.yaml - 파라미터 단순화 버전
-# CoCoNut Stage 2: Continual Learning with Intelligent Replay Buffer
+# config/adapt_config.yaml - Headless 옵션 추가 버전
 
 # =================================================================
-# DESIGN PHILOSOPHY (단순화됨)
+# DESIGN PHILOSOPHY (Headless 옵션 추가)
 # =================================================================
 Design_Documentation:
   philosophy: "Intelligent Replay Buffer for Continual Palmprint Recognition"
@@ -11,6 +10,7 @@ Design_Documentation:
   loss_strategy: "Basic SupCon for stable continual learning"
   buffer_strategy: "Faiss-optimized diversity-based replay"
   scientific_basis: "Proven SupCon + Novel replay buffer design"
+  headless_capability: "Optional head removal for open-set verification"
 
 # =================================================================
 # DATASET CONFIGURATION
@@ -23,7 +23,7 @@ Dataset:
   dataset_path: "./data/test_tongji.txt"
 
 # =================================================================
-# MODEL CONFIGURATION (CCNet)
+# MODEL CONFIGURATION (CCNet with Headless Option)
 # =================================================================
 PalmRecognizer:
   architecture: "CCNet"
@@ -33,9 +33,15 @@ PalmRecognizer:
   learning_rate: 0.001
   batch_size: 10
   load_weights_folder: "./results/checkpoint/net_params_best.pth"
+  
+  # 🔥 NEW: Headless Configuration
+  headless_mode: false  # true: remove head, false: keep head
+  verification_method: "classification"  # "classification" or "metric"
+  metric_type: "cosine"  # "cosine" or "l2" (for metric verification)
+  similarity_threshold: 0.5  # threshold for metric verification
 
 # =================================================================
-# CONTINUAL LEARNER CONFIGURATION (단순화됨)
+# CONTINUAL LEARNER CONFIGURATION
 # =================================================================
 ContinualLearner:
   adaptation: true
@@ -47,12 +53,12 @@ ContinualLearner:
   learning_rate: 0.001
   batch_size: 10
   
-  # Hard Mining 설정 (단순화)
+  # Hard Mining 설정
   enable_hard_mining: true
-  hard_mining_ratio: 0.3  # 30% hard samples (고정)
+  hard_mining_ratio: 0.3
 
 # =================================================================
-# REPLAY BUFFER CONFIGURATION (핵심 기여)
+# REPLAY BUFFER CONFIGURATION
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
@@ -65,34 +71,31 @@ ReplayBuffer:
   model_save_path: "./results/models/"
 
 # =================================================================
-# DATA AUGMENTATION (3가지만)
+# DATA AUGMENTATION
 # =================================================================
 DataAugmentation:
   enable_augmentation: true
   augmentation_probability: 0.4
   
-  # 1. 기하학적 증강
   enable_geometric: true
   geometric_probability: 0.3
   max_rotation_degrees: 3
-  max_translation_ratio: 0.05  # 5% of image size
+  max_translation_ratio: 0.05
   
-  # 2. 해상도 적응 증강
   enable_resolution_adaptation: true
   resolution_probability: 0.3
   intermediate_resolutions:
-    - [64, 64]    # 저해상도 시뮬레이션
-    - [96, 96]    # 중간 해상도
-    - [160, 160]  # 고해상도
+    - [64, 64]
+    - [96, 96]
+    - [160, 160]
   resize_methods: ["nearest", "bilinear", "bicubic", "lanczos"]
   
-  # 3. 노이즈 증강
   enable_noise: true
   noise_probability: 0.3
   noise_std_range: [0.01, 0.03]
 
 # =================================================================
-# LOSS CONFIGURATION (단순화됨)
+# LOSS CONFIGURATION
 # =================================================================
 Loss:
   temp: 0.07
