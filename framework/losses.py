@@ -1,45 +1,108 @@
-# framework/losses.py - 완전 단순화된 버전
+# framework/losses.py - 완전 수정 버전
 """
-CoCoNut Simplified Loss Functions
+CoCoNut Loss Functions
 
 DESIGN PHILOSOPHY:
-- Focus on Replay Buffer innovation only
-- Use proven SupCon loss for stable continual learning
-- Remove all W2ML complexity for clear paper contribution
-
-STATUS: W2ML removed, basic SupCon only
+- SupConLoss 직접 구현
+- W2ML 의존성 제거
+- 안정적인 contrastive learning
 """
 
-# 기존 CCNet의 검증된 SupConLoss를 그대로 사용
-from loss import SupConLoss
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# 기존 복잡한 W2ML 관련 클래스들 모두 제거:
-# - CompleteW2MLSupConLoss (삭제)
-# - DifficultyWeightedSupConLoss (삭제)
-# - create_w2ml_loss() (삭제)
-# - benchmark_faiss_w2ml_performance() (삭제)
+class SupConLoss(nn.Module):
+    """Supervised Contrastive Learning Loss"""
+    
+    def __init__(self, temperature=0.07, contrast_mode='all', base_temperature=0.07):
+        super(SupConLoss, self).__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+    def forward(self, features, labels=None, mask=None):
+        """
+        Args:
+            features: [batch_size, n_views, feature_dim]
+            labels: [batch_size]
+            mask: contrastive mask of shape [batch_size, batch_size]
+        Returns:
+            loss: scalar
+        """
+        device = features.device
+
+        if len(features.shape) < 3:
+            raise ValueError('`features` needs to be [bsz, n_views, ...],'
+                             'at least 3 dimensions are required')
+        if len(features.shape) > 3:
+            features = features.view(features.shape[0], features.shape[1], -1)
+
+        batch_size = features.shape[0]
+        if labels is not None and mask is not None:
+            raise ValueError('Cannot define both `labels` and `mask`')
+        elif labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        elif labels is not None:
+            labels = labels.contiguous().view(-1, 1)
+            if labels.shape[0] != batch_size:
+                raise ValueError('Num of labels does not match num of features')
+            mask = torch.eq(labels, labels.T).float().to(device)
+        else:
+            mask = mask.float().to(device)
+
+        contrast_count = features.shape[1]
+        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+        if self.contrast_mode == 'one':
+            anchor_feature = features[:, 0]
+            anchor_count = 1
+        elif self.contrast_mode == 'all':
+            anchor_feature = contrast_feature
+            anchor_count = contrast_count
+        else:
+            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
+
+        # compute logits
+        anchor_dot_contrast = torch.div(
+            torch.matmul(anchor_feature, contrast_feature.T),
+            self.temperature)
+        
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # tile mask
+        mask = mask.repeat(anchor_count, contrast_count)
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
+            0
+        )
+        mask = mask * logits_mask
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+
+        # loss
+        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(anchor_count, batch_size).mean()
+
+        return loss
 
 
 def create_coconut_loss(temperature=0.07):
-    """
-    CoCoNut용 단순한 손실함수 생성
-    
-    Args:
-        temperature: SupCon 온도 파라미터
-        
-    Returns:
-        기본 SupConLoss 인스턴스
-    """
+    """CoCoNut용 손실함수 생성"""
     return SupConLoss(temperature=temperature)
 
 
 def get_coconut_loss_config():
-    """
-    CoCoNut 권장 손실함수 설정
-    
-    Returns:
-        단순화된 설정 딕셔너리
-    """
+    """CoCoNut 권장 손실함수 설정"""
     return {
         "continual_loss": {
             "type": "SupConLoss",
@@ -51,23 +114,3 @@ def get_coconut_loss_config():
             "temperature": 0.07
         }
     }
-
-
-if __name__ == "__main__":
-    # 단순한 테스트
-    print("🥥 CoCoNut Simplified Loss Functions")
-    print("✅ Using basic SupConLoss for continual learning")
-    
-    # 기본 손실함수 테스트
-    loss_fn = create_coconut_loss()
-    print(f"✅ Created SupConLoss with temperature: {loss_fn.temperature}")
-    
-    # 테스트 데이터로 검증
-    import torch
-    batch_size = 8
-    features = torch.randn(batch_size, 2, 512)  # [batch, views, feature_dim]
-    labels = torch.randint(0, 4, (batch_size,))
-    
-    loss = loss_fn(features, labels)
-    print(f"✅ Test loss computed: {loss.item():.6f}")
-    print("🚀 Simplified loss functions ready!")

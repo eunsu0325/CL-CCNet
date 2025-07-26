@@ -1,13 +1,6 @@
-# framework/coconut.py - Headless 지원 업데이트
-
+# framework/coconut.py - import 부분 수정
 """
 === COCONUT STAGE 2: CONTINUAL LEARNING WITH HEADLESS SUPPORT ===
-
-NEW FEATURES:
-- Headless mode for open-set verification
-- Metric-based authentication
-- Runtime head removal capability
-- Fair comparison between headless and classification modes
 """
 
 import torch
@@ -34,7 +27,7 @@ except ImportError:
 
 from models.ccnet_model import ccnet, HeadlessVerifier
 from framework.replay_buffer import CoconutReplayBuffer
-from loss import SupConLoss
+from .losses import SupConLoss  # 🔥 수정된 import
 from datasets.palm_dataset import MyDataset
 from torch.utils.data import DataLoader
 
@@ -161,7 +154,7 @@ class CoconutSystem:
             print(f"[System] ✅ Classification-based verification")
 
     def _initialize_replay_buffer(self):
-        """리플레이 버퍼 초기화 (기존과 동일)"""
+        """리플레이 버퍼 초기화 (Hard Mining + 데이터 증강 설정 추가)"""
         print("[System] Initializing Intelligent Replay Buffer...")
         cfg_buffer = self.config.replay_buffer
         cfg_model = self.config.palm_recognizer
@@ -176,6 +169,22 @@ class CoconutSystem:
         
         # 리플레이 버퍼에 특징 추출기 설정
         self.replay_buffer.set_feature_extractor(self.learner_net)
+        
+        # 🔥 Hard Mining 설정 전달
+        cfg_learner = self.config.continual_learner
+        if cfg_learner:
+            self.replay_buffer.update_hard_mining_config(
+                getattr(cfg_learner, 'enable_hard_mining', False),
+                getattr(cfg_learner, 'hard_mining_ratio', 0.3)
+            )
+        
+        # 🔥 데이터 증강 설정 전달
+        cfg_augmentation = self.config.data_augmentation
+        if cfg_augmentation:
+            self.replay_buffer.update_augmentation_config(
+                getattr(cfg_augmentation, 'enable_augmentation', False),
+                cfg_augmentation
+            )
 
     def _initialize_basic_learning(self):
         """기본 연속학습 시스템 초기화"""
@@ -523,44 +532,65 @@ class CoconutSystem:
         print(f"  🔧 Mode: {'Headless' if self.headless_mode else 'Classification'}")
         print(f"  🕐 타임스탬프: {timestamp}")
 
-    # 기존의 다른 메서드들은 동일하게 유지...
     def _resume_from_latest_checkpoint(self):
-        """체크포인트에서 시스템 복원 (기존과 동일)"""
-        checkpoint_files = list(self.checkpoint_dir.glob('checkpoint_step_*.pth'))
-        
-        if not checkpoint_files:
-            print("[Resume] 📂 No checkpoints found - starting fresh")
-            return
-        
-        # 가장 최신 체크포인트 찾기
-        latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
-        step_num = int(latest_checkpoint.stem.split('_')[-1])
-        
-        print(f"[Resume] 🔄 Found checkpoint: {latest_checkpoint.name}")
-        print(f"[Resume] 📍 Resuming from step: {step_num}")
-        
-        try:
-            # 체크포인트 로드
-            checkpoint = torch.load(latest_checkpoint, map_location=self.device)
-            
-            # 모델 상태 복원
-            self.learner_net.load_state_dict(checkpoint['learner_state_dict'])
-            self.predictor_net.load_state_dict(checkpoint['predictor_state_dict'])
-            
-            # 옵티마이저 상태 복원
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            
-            # 학습 상태 복원
-            self.learner_step_count = checkpoint['step_count']
-            self.global_dataset_index = checkpoint.get('global_dataset_index', 0)
-            self.simple_stats = checkpoint.get('simple_stats', self.simple_stats)
-            
-            print(f"[Resume] ✅ Successfully resumed from step {self.learner_step_count}")
-            print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
-            print(f"   Dataset position: {self.global_dataset_index}")
-        
-        except Exception as e:
-            print(f"[Resume] ❌ Failed to resume: {e}")
-            print(f"[Resume] 🔄 Starting fresh instead")
-            self.learner_step_count = 0
-            self.global_dataset_index = 0
+  
+      checkpoint_files = list(self.checkpoint_dir.glob('checkpoint_step_*.pth'))
+      
+      if not checkpoint_files:
+          print("[Resume] 📂 No checkpoints found - starting fresh")
+          return
+      
+      # 가장 최신 체크포인트 찾기
+      latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
+      step_num = int(latest_checkpoint.stem.split('_')[-1])
+      
+      print(f"[Resume] 🔄 Found checkpoint: {latest_checkpoint.name}")
+      print(f"[Resume] 📍 Resuming from step: {step_num}")
+      
+      try:
+          # 체크포인트 로드
+          checkpoint = torch.load(latest_checkpoint, map_location=self.device)
+          
+          # 🔥 Headless 모드용 state_dict 필터링
+          learner_state_dict = checkpoint['learner_state_dict']
+          predictor_state_dict = checkpoint['predictor_state_dict']
+          
+          if self.headless_mode:
+              print("[Resume] 🔪 Filtering out classification head from checkpoint...")
+              # arclayer_ 로 시작하는 키들 제거
+              learner_filtered = {k: v for k, v in learner_state_dict.items() 
+                                if not k.startswith('arclayer_')}
+              predictor_filtered = {k: v for k, v in predictor_state_dict.items() 
+                                  if not k.startswith('arclayer_')}
+              
+              removed_count = len(learner_state_dict) - len(learner_filtered)
+              print(f"   Removed {removed_count} classification head parameters")
+              
+              # 필터링된 state_dict 로드
+              self.learner_net.load_state_dict(learner_filtered, strict=False)
+              self.predictor_net.load_state_dict(predictor_filtered, strict=False)
+          else:
+              # Normal 모드: 전체 로드
+              self.learner_net.load_state_dict(learner_state_dict)
+              self.predictor_net.load_state_dict(predictor_state_dict)
+          
+          # 옵티마이저 상태 복원
+          self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+          
+          # 학습 상태 복원
+          self.learner_step_count = checkpoint['step_count']
+          self.global_dataset_index = checkpoint.get('global_dataset_index', 0)
+          self.simple_stats = checkpoint.get('simple_stats', self.simple_stats)
+          
+          print(f"[Resume] ✅ Successfully resumed from step {self.learner_step_count}")
+          print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
+          print(f"   Dataset position: {self.global_dataset_index}")
+      
+      except Exception as e:
+          print(f"[Resume] ❌ Failed to resume: {e}")
+          print(f"[Resume] 🔄 Starting fresh instead")
+          self.learner_step_count = 0
+          self.global_dataset_index = 0
+
+# 실제 파일에 적용
+print("🔧 체크포인트 로딩 로직 수정 중...")

@@ -40,14 +40,13 @@ class CoconutReplayBuffer:
         self.metadata = {}
         self.feature_extractor = None
 
-        # Hard Mining 설정
-        self.hard_mining_config = getattr(config, 'continual_learner', None)
-        self.enable_hard_mining = getattr(self.hard_mining_config, 'enable_hard_mining', False)
-        self.hard_ratio = getattr(self.hard_mining_config, 'hard_mining_ratio', 0.3)
+        # 🔥 Hard Mining 설정 (나중에 CoconutSystem에서 설정됨)
+        self.enable_hard_mining = False  # 기본값
+        self.hard_ratio = 0.3  # 기본값
         
-        # 데이터 증강 설정
-        self.aug_config = getattr(config, 'data_augmentation', None)
-        self.enable_augmentation = getattr(self.aug_config, 'enable_augmentation', False)
+        # 🔥 데이터 증강 설정 (나중에 CoconutSystem에서 설정됨)
+        self.enable_augmentation = False  # 기본값
+        self.aug_config = None
         self._setup_augmentation_transforms()
         
         # 상태 파일 경로
@@ -59,6 +58,19 @@ class CoconutReplayBuffer:
         print(f"[Buffer] Hard mining: {self.enable_hard_mining} (ratio: {self.hard_ratio})")
         print(f"[Buffer] Augmentation: {self.enable_augmentation}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
+
+    def update_hard_mining_config(self, enable_hard_mining, hard_ratio):
+        """🔥 Hard Mining 설정 업데이트 (CoconutSystem에서 호출)"""
+        self.enable_hard_mining = enable_hard_mining
+        self.hard_ratio = hard_ratio
+        print(f"[Buffer] 🔥 Hard Mining updated: {self.enable_hard_mining} (ratio: {self.hard_ratio})")
+
+    def update_augmentation_config(self, enable_augmentation, aug_config):
+        """🔥 데이터 증강 설정 업데이트 (CoconutSystem에서 호출)"""
+        self.enable_augmentation = enable_augmentation
+        self.aug_config = aug_config
+        self._setup_augmentation_transforms()
+        print(f"[Buffer] 🎨 Augmentation updated: {self.enable_augmentation}")
 
     def _setup_augmentation_transforms(self):
         """3가지 증강 변환 설정"""
@@ -452,3 +464,5 @@ class CoconutReplayBuffer:
             self.metadata = {}
             self.image_storage = []
             self.stored_embeddings = []
+
+print("✅ ReplayBuffer 완전 수정 완료!")

@@ -1,4 +1,3 @@
-# framework/config.py - W2ML 설정 제거된 단순 버전
 """
 CoCoNut Framework Configuration Classes
 
@@ -11,7 +10,7 @@ DESIGN PHILOSOPHY:
 
 import dataclasses
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 # === 연속학습 실험용 설정들 ===
 @dataclasses.dataclass
@@ -31,7 +30,7 @@ class ReplayBufferConfig:
 
 @dataclasses.dataclass
 class ContinualLearnerConfig:
-    """연속 학습기 설정 (단순화됨)"""
+    """연속 학습기 설정 (Hard Mining 지원)"""
     config_file: Path
     adaptation: bool
     adaptation_epochs: int
@@ -43,6 +42,9 @@ class ContinualLearnerConfig:
     # 기본 학습 설정
     learning_rate: Optional[float] = 0.001
     batch_size: Optional[int] = 10
+    # 🔥 Hard Mining 설정
+    enable_hard_mining: Optional[bool] = True
+    hard_mining_ratio: Optional[float] = 0.3
 
 @dataclasses.dataclass  
 class LossConfig:
@@ -54,8 +56,6 @@ class LossConfig:
     weight1: Optional[float] = 0.8  # ArcFace 가중치
     weight2: Optional[float] = 0.2  # SupCon 가중치
 
-# W2MLExperimentConfig 클래스 완전 제거
-
 @dataclasses.dataclass
 class ModelSavingConfig:
     """모델 저장 설정"""
@@ -65,6 +65,33 @@ class ModelSavingConfig:
     enable_intermediate_save: bool = True
     include_timestamp: bool = True
     auto_generate_readme: bool = True
+
+@dataclasses.dataclass
+class DataAugmentationConfig:
+    """데이터 증강 설정"""
+    config_file: Path
+    enable_augmentation: bool = True
+    augmentation_probability: float = 0.4
+    enable_geometric: bool = True
+    geometric_probability: float = 0.3
+    max_rotation_degrees: int = 3
+    max_translation_ratio: float = 0.05
+    enable_resolution_adaptation: bool = True
+    resolution_probability: float = 0.3
+    intermediate_resolutions: Optional[List] = None
+    resize_methods: Optional[List] = None
+    enable_noise: bool = True
+    noise_probability: float = 0.3
+    noise_std_range: Optional[List] = None
+    
+    def __post_init__(self):
+        """기본값 설정"""
+        if self.intermediate_resolutions is None:
+            self.intermediate_resolutions = [[64, 64], [96, 96], [160, 160]]
+        if self.resize_methods is None:
+            self.resize_methods = ["nearest", "bilinear", "bicubic", "lanczos"]
+        if self.noise_std_range is None:
+            self.noise_std_range = [0.01, 0.03]
 
 # === 사전 훈련용 설정들 ===
 @dataclasses.dataclass
@@ -85,43 +112,3 @@ class PathsConfig:
     results_path: str
     save_interval: int
     test_interval: int
-
-@dataclasses.dataclass
-class PalmRecognizerConfig:
-    """손금 인식기 (CCNet) 설정 - Headless 지원 추가"""
-    config_file: Path
-    architecture: str
-    num_classes: int
-    com_weight: float
-    feature_dimension: int
-    
-    # 기본 학습 설정
-    learning_rate: Optional[float] = 0.001
-    batch_size: Optional[int] = 1024
-    
-    # 모델 로딩
-    load_weights_folder: Optional[str] = None
-    
-    # 🔥 NEW: Headless Configuration
-    headless_mode: Optional[bool] = False  # true: 헤드 제거, false: 헤드 유지
-    verification_method: Optional[str] = "classification"  # "classification" or "metric"
-    metric_type: Optional[str] = "cosine"  # "cosine" or "l2"
-    similarity_threshold: Optional[float] = 0.5  # 메트릭 기반 인증 임계값
-    
-    def __post_init__(self):
-        """설정 검증 및 자동 조정"""
-        # Headless 모드에서는 metric verification 강제
-        if self.headless_mode and self.verification_method == "classification":
-            print(f"[Config] Warning: Headless mode requires metric verification. "
-                  f"Changing from '{self.verification_method}' to 'metric'")
-            self.verification_method = "metric"
-        
-        # 설정 정보 출력
-        print(f"[Config] 🔧 Model Configuration:")
-        print(f"   Architecture: {self.architecture}")
-        print(f"   Headless Mode: {self.headless_mode}")
-        print(f"   Verification: {self.verification_method}")
-        if self.verification_method == "metric":
-            print(f"   Metric Type: {self.metric_type}")
-            print(f"   Threshold: {self.similarity_threshold}")
-    

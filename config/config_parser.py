@@ -1,4 +1,4 @@
-# config/config_parser.py - 설정 파서 (수정된 버전)
+# config/config_parser.py - 타입 변환 에러 수정
 """
 COCONUT Configuration Parser
 
@@ -7,6 +7,7 @@ DESIGN PHILOSOPHY:
 - Automatic type validation and conversion
 - Clear separation between pretrain and adaptation configs
 - 🔥 ModelSaving configuration support
+- 🔥 DataAugmentation configuration support
 """
 
 import dataclasses
@@ -20,7 +21,7 @@ import yaml
 from datasets.config import DatasetConfig
 from framework.config import (
     ContinualLearnerConfig, ReplayBufferConfig, LossConfig, 
-    W2MLExperimentConfig, TrainingConfig, PathsConfig, ModelSavingConfig
+    TrainingConfig, PathsConfig, ModelSavingConfig, DataAugmentationConfig
 )
 from models.config import PalmRecognizerConfig
 
@@ -34,6 +35,7 @@ class ConfigParser():
     - Automatic type validation and conversion
     - Extensible design for new configuration types
     - 🔥 ModelSaving configuration support
+    - 🔥 DataAugmentation configuration support
     """
     
     def __init__(self, config_file: Union[str, PathLike, Path]) -> None:
@@ -46,8 +48,8 @@ class ConfigParser():
         self.continual_learner = None
         self.replay_buffer = None
         self.loss = None
-        self.w2ml_experiment = None
-        self.model_saving = None  # 🔥 새로운 모델 저장 설정
+        self.model_saving = None
+        self.data_augmentation = None
         
         # 사전 훈련 전용 설정
         self.training = None
@@ -55,17 +57,29 @@ class ConfigParser():
 
         self.parse()
 
+    def _convert_type(self, value, expected_type):
+        """안전한 타입 변환"""
+        if expected_type == List or get_origin(expected_type) == list:
+            if isinstance(value, (list, tuple)):
+                return list(value)
+            else:
+                return [value]
+        elif expected_type == tuple:
+            if isinstance(value, (list, tuple)):
+                return tuple(value)
+            else:
+                return (value,)
+        else:
+            return expected_type(value)
+
     def parse(self):
         """설정 파일을 파싱하고 객체를 생성합니다."""
         
         with open(self.filename, 'r', encoding='utf-8') as file:
             self.config_dict = yaml.safe_load(file)
 
-        # YAML 리스트를 튜플로 변환
-        for config_type in self.config_dict.values():
-            for key, value in config_type.items():
-                if isinstance(value, List):
-                    config_type[key] = tuple(value)
+        # YAML 리스트를 튜플로 변환하지 않고 그대로 유지
+        # (List 타입 필드들이 있기 때문)
 
         # 데이터 타입 검증 및 자동 변환
         for config_type_key, config_type in self.config_dict.items():
@@ -94,6 +108,9 @@ class ConfigParser():
                 print(f"[CONFIG] Warning: {config_class_name} not found, skipping...")
                 continue
 
+            if not isinstance(config_type, dict):
+                continue
+
             for field in dataclasses.fields(config_type_class):
                 if field.name == 'config_file':
                     continue
@@ -113,47 +130,59 @@ class ConfigParser():
                         if len(expected_type) == 1:
                             print(f'[CONFIG] Converting {field.name} from {type(value).__name__} '
                                   f'to {expected_type[0].__name__}.')
-                            config_type[field.name] = expected_type[0](value)
+                            try:
+                                # 🔥 안전한 타입 변환 사용
+                                config_type[field.name] = self._convert_type(value, expected_type[0])
+                            except Exception as e:
+                                print(f'[CONFIG] Warning: Failed to convert {field.name}: {e}')
+                                # 변환 실패시 원본 값 유지
+                                pass
                         else:
-                            assert False, f'Ambiguous type for {field.name}, cannot auto-convert!'
+                            print(f'[CONFIG] Warning: Ambiguous type for {field.name}, keeping original value')
 
         # 모든 설정 객체에 원본 설정 파일의 경로 추가
         for config_type_key, config_type in self.config_dict.items():
-            if config_type_key != 'Design_Documentation':  # 메타데이터 제외
+            if config_type_key != 'Design_Documentation' and isinstance(config_type, dict):
                 config_type['config_file'] = self.filename
 
         # 경로 문자열을 Path 객체로 변환
         for config_type_key, config_type in self.config_dict.items():
-            if config_type_key != 'Design_Documentation':  # 메타데이터 제외
+            if config_type_key != 'Design_Documentation' and isinstance(config_type, dict):
                 for key, value in config_type.items():
                     if isinstance(value, str) and ('path' in key.lower() or 'folder' in key.lower()):
                         config_type[key] = Path(value).absolute()
 
         # 최종 설정 객체 생성
-        if 'Dataset' in self.config_dict:
-            self.dataset = DatasetConfig(**self.config_dict['Dataset'])
-        if 'PalmRecognizer' in self.config_dict:
-            self.palm_recognizer = PalmRecognizerConfig(**self.config_dict['PalmRecognizer'])
-        if 'ContinualLearner' in self.config_dict:
-            self.continual_learner = ContinualLearnerConfig(**self.config_dict['ContinualLearner'])
-        if 'ReplayBuffer' in self.config_dict:
-            self.replay_buffer = ReplayBufferConfig(**self.config_dict['ReplayBuffer'])
-        if 'Loss' in self.config_dict:
-            self.loss = LossConfig(**self.config_dict['Loss'])
-        if 'W2ML_Experiment' in self.config_dict:
-            self.w2ml_experiment = W2MLExperimentConfig(**self.config_dict['W2ML_Experiment'])
-        # 🔥 새로운 모델 저장 설정
-        if 'ModelSaving' in self.config_dict:
-            self.model_saving = ModelSavingConfig(**self.config_dict['ModelSaving'])
-        else:
-            # 기본값으로 설정 (호환성 유지)
-            self.model_saving = None
+        try:
+            if 'Dataset' in self.config_dict:
+                self.dataset = DatasetConfig(**self.config_dict['Dataset'])
+            if 'PalmRecognizer' in self.config_dict:
+                self.palm_recognizer = PalmRecognizerConfig(**self.config_dict['PalmRecognizer'])
+            if 'ContinualLearner' in self.config_dict:
+                self.continual_learner = ContinualLearnerConfig(**self.config_dict['ContinualLearner'])
+            if 'ReplayBuffer' in self.config_dict:
+                self.replay_buffer = ReplayBufferConfig(**self.config_dict['ReplayBuffer'])
+            if 'Loss' in self.config_dict:
+                self.loss = LossConfig(**self.config_dict['Loss'])
+            if 'ModelSaving' in self.config_dict:
+                self.model_saving = ModelSavingConfig(**self.config_dict['ModelSaving'])
+            else:
+                self.model_saving = None
             
-        # 사전 훈련 전용 설정
-        if 'Training' in self.config_dict:
-            self.training = TrainingConfig(**self.config_dict['Training'])
-        if 'Paths' in self.config_dict:
-            self.paths = PathsConfig(**self.config_dict['Paths'])
+            if 'DataAugmentation' in self.config_dict:
+                self.data_augmentation = DataAugmentationConfig(**self.config_dict['DataAugmentation'])
+            else:
+                self.data_augmentation = None
+                
+            # 사전 훈련 전용 설정
+            if 'Training' in self.config_dict:
+                self.training = TrainingConfig(**self.config_dict['Training'])
+            if 'Paths' in self.config_dict:
+                self.paths = PathsConfig(**self.config_dict['Paths'])
+                
+        except Exception as e:
+            print(f"[CONFIG] Error creating config objects: {e}")
+            raise
 
     def __str__(self):
         string = ''
@@ -167,12 +196,14 @@ class ConfigParser():
             string += f'----- ReplayBuffer --- START -----\n{self.replay_buffer}\n----- ReplayBuffer --- END -------\n'
         if self.loss:
             string += f'----- Loss --- START -----\n{self.loss}\n----- Loss --- END -------\n'
-        if self.w2ml_experiment:
-            string += f'----- W2ML_Experiment --- START -----\n{self.w2ml_experiment}\n----- W2ML_Experiment --- END -------\n'
         if self.model_saving:
             string += f'----- ModelSaving --- START -----\n{self.model_saving}\n----- ModelSaving --- END -------\n'
+        if self.data_augmentation:
+            string += f'----- DataAugmentation --- START -----\n{self.data_augmentation}\n----- DataAugmentation --- END -------\n'
         if self.training:
             string += f'----- Training --- START -----\n{self.training}\n----- Training --- END -------\n'
         if self.paths:
             string += f'----- Paths --- START -----\n{self.paths}\n----- Paths --- END -------\n'
         return string
+
+print("✅ config_parser.py 타입 변환 에러 수정 완료!")

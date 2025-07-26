@@ -1,10 +1,10 @@
 # run_coconut.py - 온라인 적응 실행 스크립트
 """
-COCONUT Stage 2: Online Adaptation Execution Script
+COCONUT Stage 2: Headless Online Adaptation Execution Script
 
 DESIGN PHILOSOPHY:
-- Apply W2ML-based difficulty-aware learning
-- Focus on hard samples for targeted improvement
+- Apply Headless-based continual learning
+- Focus on metric verification for open-set recognition
 - Maintain continual learning without forgetting
 """
 
@@ -24,12 +24,12 @@ def main():
     
     EXECUTION FLOW:
     1. Load adaptation configuration
-    2. Initialize COCONUT system with W2ML
+    2. Initialize COCONUT system with Headless mode
     3. Execute online adaptation experiment
-    4. Analyze W2ML learning effectiveness
+    4. Analyze Headless learning effectiveness
     """
     print("="*80)
-    print("🥥 COCONUT STAGE 2: ONLINE ADAPTATION EXECUTION")
+    print("🥥 COCONUT STAGE 2: HEADLESS ONLINE ADAPTATION EXECUTION")
     print("="*80)
     
     # 1. 설정 파일 로드 (온라인 적응 실험용)
@@ -45,7 +45,7 @@ def main():
 
     # 3. 메인 시스템 객체 생성 및 실험 실행
     system = CoconutSystem(config)
-    system.run_experiment() # W2ML 기반 연속 학습 적응 실험 실행
+    system.run_experiment() # Headless 기반 연속 학습 적응 실험 실행
 
     # 4. 실험 후 최종 성능 평가
     print("\n--- Final Performance Evaluation ---")
@@ -76,19 +76,21 @@ def main():
         # 최종 성능 평가 실행
         final_results = perform_evaluation(final_model, train_loader_eval, test_loader_eval, device)
         
-        print("\n--- W2ML Adaptation Results ---")
+        print("\n--- Headless Adaptation Results ---")
         print(f"Final Rank-1 Accuracy: {final_results['rank1_accuracy']:.3f}%")
         print(f"Final EER: {final_results['eer']:.4f}%")
-        print("✅ W2ML-based continual learning completed successfully!")
+        print("✅ Headless-based continual learning completed successfully!")
         
     except FileNotFoundError as e:
         print(f"[Warning] Dataset file not found: {e}")
         print("Please ensure the dataset path in config/adapt_config.yaml points to a valid text file.")
-        print("The W2ML continual learning experiment itself was completed successfully.")
+        print("The Headless continual learning experiment itself was completed successfully.")
         
     except Exception as e:
         print(f"[Warning] Final evaluation failed: {e}")
-        print("The W2ML continual learning experiment itself was completed successfully.")
+        print("The Headless continual learning experiment itself was completed successfully.")
 
 if __name__ == '__main__':
     main()
+
+print("✅ run_coconut.py 완전 수정 완료!")
