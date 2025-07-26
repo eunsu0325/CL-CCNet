@@ -1,15 +1,15 @@
-# config/adapt_config.yaml - Headless 옵션 추가 버전
+# config/adapt_config.yaml - 배치 구성 제어 완전 버전
 
 # =================================================================
-# DESIGN PHILOSOPHY (Headless 옵션 추가)
+# DESIGN PHILOSOPHY (Headless 옵션 + 배치 구성 제어)
 # =================================================================
 Design_Documentation:
   philosophy: "Intelligent Replay Buffer for Continual Palmprint Recognition"
-  core_innovation: "Diversity-based sample selection with Faiss acceleration"
-  main_contribution: "Memory-efficient continual learning without forgetting"
+  core_innovation: "Controlled batch composition with precise ratios"
+  main_contribution: "Memory-efficient continual learning with optimal positive/hard ratios"
   loss_strategy: "Basic SupCon for stable continual learning"
-  buffer_strategy: "Faiss-optimized diversity-based replay"
-  scientific_basis: "Proven SupCon + Novel replay buffer design"
+  buffer_strategy: "Faiss-optimized diversity + controlled sampling"
+  scientific_basis: "Proven SupCon + Novel controlled batch composition"
   headless_capability: "Optional head removal for open-set verification"
 
 # =================================================================
@@ -31,17 +31,17 @@ PalmRecognizer:
   com_weight: 0.8
   feature_dimension: 2048
   learning_rate: 0.001
-  batch_size: 10
+  batch_size: 1024  # 🔥 사전훈련용 배치사이즈 (연속학습과 별개)
   load_weights_folder: "./results/checkpoint/net_params_best.pth"
   
-  # 🔥 NEW: Headless Configuration
-  headless_mode: false  # true: remove head, false: keep head
-  verification_method: "classification"  # "classification" or "metric"
-  metric_type: "cosine"  # "cosine" or "l2" (for metric verification)
-  similarity_threshold: 0.5  # threshold for metric verification
+  # 🔥 Headless Configuration
+  headless_mode: false
+  verification_method: "classification"
+  metric_type: "cosine"
+  similarity_threshold: 0.5
 
 # =================================================================
-# CONTINUAL LEARNER CONFIGURATION
+# CONTINUAL LEARNER CONFIGURATION (🔥 배치 구성 제어 추가)
 # =================================================================
 ContinualLearner:
   adaptation: true
@@ -51,14 +51,20 @@ ContinualLearner:
   new_data_weight: 1.0
   intermediate_save_frequency: 50
   learning_rate: 0.001
-  batch_size: 10
   
-  # Hard Mining 설정
-  enable_hard_mining: true
-  hard_mining_ratio: 0.3
+  # 🔥 연속학습 전용 배치 사이즈 (PalmRecognizer.batch_size와 별개)
+  continual_batch_size: 10  # ← 이게 실제 연속학습 배치 사이즈!
+  
+  # 🔥 NEW: 배치 구성 비율 제어
+  target_positive_ratio: 0.3      # 30% positive pairs (3개 샘플 in batch of 10)
+  hard_mining_ratio: 0.3          # 30% hard samples (3개 in batch of 10)
+  enable_hard_mining: true        # Hard mining 활성화
+  
+  # 기존 Hard Mining 설정 (호환성)
+  hard_mining_ratio_legacy: 0.3
 
 # =================================================================
-# REPLAY BUFFER CONFIGURATION
+# REPLAY BUFFER CONFIGURATION (🔥 샘플링 전략 제어 추가)
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
@@ -69,6 +75,12 @@ ReplayBuffer:
   enable_smart_sampling: true
   diversity_update_frequency: 10
   model_save_path: "./results/models/"
+  
+  # 🔥 NEW: 제어된 샘플링 전략
+  sampling_strategy: "controlled"     # "controlled", "balanced", "original"
+  force_positive_pairs: true          # 항상 positive pairs 보장
+  min_positive_pairs: 1               # 최소 positive pair 수
+  max_positive_ratio: 0.5             # 최대 positive pair 비율 제한
 
 # =================================================================
 # DATA AUGMENTATION
