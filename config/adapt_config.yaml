@@ -31,18 +31,18 @@ PalmRecognizer:
   com_weight: 0.8
   feature_dimension: 2048
   learning_rate: 0.001
-  batch_size: 1024  # 🔥 사전훈련용 배치사이즈 (연속학습과 별개)
+  batch_size: 1024
   load_weights_folder: "./results/checkpoint/net_params_best.pth"
-  compression_dim: Optional[int] = 128
   
-  # 🔥 Headless Configuration
-  headless_mode: false
-  verification_method: "classification"
+  # 🔥 Headless Configuration (중복 제거, 올바른 값만)
+  headless_mode: true
+  verification_method: "metric"
   metric_type: "cosine"
   similarity_threshold: 0.5
+  compression_dim: 128
 
 # =================================================================
-# CONTINUAL LEARNER CONFIGURATION (🔥 배치 구성 제어 추가)
+# CONTINUAL LEARNER CONFIGURATION
 # =================================================================
 ContinualLearner:
   adaptation: true
@@ -53,19 +53,14 @@ ContinualLearner:
   intermediate_save_frequency: 50
   learning_rate: 0.001
   
-  # 🔥 연속학습 전용 배치 사이즈 (PalmRecognizer.batch_size와 별개)
-  continual_batch_size: 10  # ← 이게 실제 연속학습 배치 사이즈!
-  
-  # 🔥 NEW: 배치 구성 비율 제어
-  target_positive_ratio: 0.3      # 30% positive pairs (3개 샘플 in batch of 10)
-  hard_mining_ratio: 0.3          # 30% hard samples (3개 in batch of 10)
-  enable_hard_mining: true        # Hard mining 활성화
-  
-  # 기존 Hard Mining 설정 (호환성)
+  continual_batch_size: 10
+  target_positive_ratio: 0.3
+  hard_mining_ratio: 0.3
+  enable_hard_mining: true
   hard_mining_ratio_legacy: 0.3
 
 # =================================================================
-# REPLAY BUFFER CONFIGURATION (🔥 샘플링 전략 제어 추가)
+# REPLAY BUFFER CONFIGURATION
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
@@ -76,12 +71,10 @@ ReplayBuffer:
   enable_smart_sampling: true
   diversity_update_frequency: 10
   model_save_path: "./results/models/"
-  
-  # 🔥 NEW: 제어된 샘플링 전략
-  sampling_strategy: "controlled"     # "controlled", "balanced", "original"
-  force_positive_pairs: true          # 항상 positive pairs 보장
-  min_positive_pairs: 1               # 최소 positive pair 수
-  max_positive_ratio: 0.5             # 최대 positive pair 비율 제한
+  sampling_strategy: "controlled"
+  force_positive_pairs: true
+  min_positive_pairs: 1
+  max_positive_ratio: 0.5
 
 # =================================================================
 # DATA AUGMENTATION
@@ -89,12 +82,10 @@ ReplayBuffer:
 DataAugmentation:
   enable_augmentation: true
   augmentation_probability: 0.4
-  
   enable_geometric: true
   geometric_probability: 0.3
   max_rotation_degrees: 3
   max_translation_ratio: 0.05
-  
   enable_resolution_adaptation: true
   resolution_probability: 0.3
   intermediate_resolutions:
@@ -102,7 +93,6 @@ DataAugmentation:
     - [96, 96]
     - [160, 160]
   resize_methods: ["nearest", "bilinear", "bicubic", "lanczos"]
-  
   enable_noise: true
   noise_probability: 0.3
   noise_std_range: [0.01, 0.03]
@@ -113,8 +103,8 @@ DataAugmentation:
 Loss:
   temp: 0.07
   type: "SupConLoss"
-  weight1: 0.8  # ArcFace (Stage 1 참고용)
-  weight2: 0.2  # SupCon
+  weight1: 0.8
+  weight2: 0.2
 
 # =================================================================
 # MODEL SAVING CONFIGURATION

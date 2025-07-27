@@ -214,7 +214,7 @@ class ccnet(torch.nn.Module):
     CCNet with optional 128D compression for headless mode
     """
     def __init__(self, num_classes, weight, headless_mode=False, compression_dim=128):
-        super(ccnet, self).__init__()
+        super().__init__()
 
         self.num_classes = num_classes
         self.headless_mode = headless_mode
