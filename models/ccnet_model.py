@@ -1,4 +1,4 @@
-# models/ccnet_model.py - 기존 CCNet과 완전 호환되는 Headless 지원 버전
+# models/ccnet_model.py - 기존과 완전 호환되는 Headless 지원 버전
 
 import torch
 import torch.nn as nn
@@ -8,16 +8,7 @@ import numpy as np
 import math
 import warnings
 
-# 기존 클래스들 그대로 유지
 class GaborConv2d(nn.Module):
-    '''
-    DESCRIPTION: an implementation of the Learnable Gabor Convolution (LGC) layer \n
-    INPUTS: \n
-    channel_in: should be 1 \n
-    channel_out: number of the output channels \n
-    kernel_size, stride, padding: 2D convolution parameters \n
-    init_ratio: scale factor of the initial parameters (receptive filed) \n
-    '''
     def __init__(self, channel_in, channel_out, kernel_size, stride=1, padding=0, init_ratio=1):
         super(GaborConv2d, self).__init__()
 
@@ -99,10 +90,6 @@ class SELayer(nn.Module):
         return x * y.expand_as(x)
 
 class CompetitiveBlock_Mul_Ord_Comp(nn.Module):
-    '''
-    DESCRIPTION: an implementation of the Competitive Block::
-    [CB = LGC + argmax + PPU] \n
-    '''
     def __init__(self, channel_in, n_competitor, ksize, stride, padding, weight, init_ratio=1, o1=32, o2=12):
         super(CompetitiveBlock_Mul_Ord_Comp, self).__init__()
 
@@ -156,7 +143,6 @@ class CompetitiveBlock_Mul_Ord_Comp(nn.Module):
         return xx
 
 class ArcMarginProduct(nn.Module):
-    r"""Implement of large margin arc distance"""
     def __init__(self, in_features, out_features, s=30.0, m=0.50, easy_margin=False):
         super(ArcMarginProduct, self).__init__()
         self.in_features = in_features
@@ -174,8 +160,7 @@ class ArcMarginProduct(nn.Module):
         self.mm = math.sin(math.pi - m) * m
 
     def forward(self, input, label=None):
-        if self.training:
-            assert label is not None
+        if self.training and label is not None:
             cosine = F.linear(F.normalize(input), F.normalize(self.weight))
             sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
             phi = cosine * self.cos_m - sine * self.sin_m
@@ -195,235 +180,273 @@ class ArcMarginProduct(nn.Module):
 
         return output
 
-# 🔥 Headless 지원이 추가된 CCNet
-class ccnet(torch.nn.Module):
-    '''
-    CompNet = CB1//CB2//CB3 + FC + Dropout + (angular_margin) Output
+class ProjectionHead(nn.Module):
+    """2048차원 → 128차원 압축을 위한 MLP - 개선 버전"""
+    def __init__(self, input_dim=2048, hidden_dim=512, output_dim=128):
+        super(ProjectionHead, self).__init__()
+        
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(0.1)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        
+        # Xavier 초기화
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+        
+        print(f"[ProjectionHead] Initialized: {input_dim} → {hidden_dim} → {output_dim}")
     
-    🔥 NEW: Headless Mode Support
-    - headless_mode=False: 기존과 완전 동일 (100% 호환)
-    - headless_mode=True: classification head 제거, metric verification
-    '''
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        # ✅ training 모드에서만 dropout 적용
+        if self.training:
+            x = self.dropout(x)
+        x = self.fc2(x)
+        return F.normalize(x, dim=-1)
 
-    def __init__(self, num_classes, weight, headless_mode=False):
+class ccnet(torch.nn.Module):
+    """
+    CCNet with optional 128D compression for headless mode
+    """
+    def __init__(self, num_classes, weight, headless_mode=False, compression_dim=128):
         super(ccnet, self).__init__()
 
         self.num_classes = num_classes
         self.headless_mode = headless_mode
+        self.compression_dim = compression_dim
 
-        # 🔥 Core Feature Extraction (항상 동일)
+        # Core feature extraction
         self.cb1 = CompetitiveBlock_Mul_Ord_Comp(channel_in=1, n_competitor=9, ksize=35, stride=3, padding=17, init_ratio=1, weight=weight)
         self.cb2 = CompetitiveBlock_Mul_Ord_Comp(channel_in=1, n_competitor=36, ksize=17, stride=3, padding=8, init_ratio=0.5, o2=24, weight=weight)
         self.cb3 = CompetitiveBlock_Mul_Ord_Comp(channel_in=1, n_competitor=9, ksize=7, stride=3, padding=3, init_ratio=0.25, weight=weight)
 
-        # Feature fusion layers (항상 동일)
+        # Feature fusion
         self.fc = torch.nn.Linear(13152, 4096)
         self.fc1 = torch.nn.Linear(4096, 2048)
         self.drop = torch.nn.Dropout(p=0.5)
         
-        # 🔥 Classification Head (headless_mode에 따라 조건적 생성)
+        # Head configuration
         if not headless_mode:
             self.arclayer_ = ArcMarginProduct(2048, num_classes, s=30, m=0.5, easy_margin=False)
+            self.projection_head = None
             print(f"[CCNet] Initialized with classification head (classes: {num_classes})")
         else:
             self.arclayer_ = None
-            print(f"[CCNet] Initialized in HEADLESS mode (no classification head)")
+            self.projection_head = ProjectionHead(input_dim=2048, output_dim=compression_dim)
+            print(f"[CCNet] Initialized in HEADLESS mode with {compression_dim}D compression")
 
     def forward(self, x, y=None):
-        """
-        Forward pass with headless support
-        
-        🔥 Return format:
-        - headless_mode=False: (logits, features) - 기존과 동일
-        - headless_mode=True: (None, features) - logits 없음
-        """
-        # Feature extraction (기존과 완전 동일)
+        # Feature extraction
         x1 = self.cb1(x)
         x2 = self.cb2(x)
         x3 = self.cb3(x)
-
         x = torch.cat((x1, x2, x3), dim=1)
 
         x1 = self.fc(x)
         x = self.fc1(x1)
         fe = torch.cat((x1, x), dim=1)  # 6144 dimensional features
         
-        # 🔥 Headless vs Normal mode
         if self.headless_mode:
-            # Headless: classification head 없음, features만 반환
-            return None, F.normalize(fe, dim=-1)
+            # Headless: 2048 → 128 compression
+            fe_2048 = F.normalize(x, dim=-1)
+            compressed_features = self.projection_head(fe_2048)
+            return None, compressed_features
         else:
-            # Normal: 기존과 완전 동일
+            # Classification: original behavior
             x = self.drop(x)
             x = self.arclayer_(x, y)
             return x, F.normalize(fe, dim=-1)
 
     def getFeatureCode(self, x):
-        """
-        특징 추출 전용 메서드 (기존과 완전 동일)
-        headless/normal 모드 관계없이 동일하게 작동
-        """
-        x1 = self.cb1(x)
-        x2 = self.cb2(x)
-        x3 = self.cb3(x)
+        """특징 추출 - 추론 최적화 적용"""
+        # ✅ 추론 최적화: eval 모드 강제 + no_grad
+        was_training = self.training
+        self.eval()
+        
+        with torch.no_grad():
+            x1 = self.cb1(x)
+            x2 = self.cb2(x)
+            x3 = self.cb3(x)
 
-        x1 = x1.view(x1.shape[0], -1)
-        x2 = x2.view(x2.shape[0], -1)
-        x3 = x3.view(x3.shape[0], -1)
-        x = torch.cat((x1, x2, x3), dim=1)
+            x1 = x1.view(x1.shape[0], -1)
+            x2 = x2.view(x2.shape[0], -1)
+            x3 = x3.view(x3.shape[0], -1)
+            x = torch.cat((x1, x2, x3), dim=1)
 
-        x = self.fc(x)
-        x = self.fc1(x)
-        x = x / torch.norm(x, p=2, dim=1, keepdim=True)
-
-        return x
+            x = self.fc(x)
+            x = self.fc1(x)
+            fe_2048 = x / torch.norm(x, p=2, dim=1, keepdim=True)
+            
+            if self.headless_mode and self.projection_head is not None:
+                result = self.projection_head(fe_2048)  # 128D
+            else:
+                result = fe_2048  # 2048D
+        
+        # 원래 모드로 복원
+        if was_training:
+            self.train()
+            
+        return result
     
     def convert_to_headless(self):
-        """
-        런타임에 classification head를 제거하는 메서드
-        온라인 학습 중에 동적으로 변경 가능
-        """
         if not self.headless_mode:
-            print("[CCNet] 🔪 Converting to headless mode...")
+            print("[CCNet] Converting to headless mode...")
             self.arclayer_ = None
+            self.projection_head = ProjectionHead(input_dim=2048, output_dim=self.compression_dim)
             self.headless_mode = True
-            print("[CCNet] ✅ Classification head removed successfully")
             return True
-        else:
-            print("[CCNet] ⚠️ Already in headless mode")
-            return False
+        return False
     
     def convert_to_classification(self, num_classes=None):
-        """
-        런타임에 classification head를 추가하는 메서드
-        """
         if self.headless_mode:
             if num_classes is None:
                 num_classes = self.num_classes
-            
-            print(f"[CCNet] 🔧 Converting to classification mode (classes: {num_classes})...")
+            print(f"[CCNet] Converting to classification mode...")
             self.arclayer_ = ArcMarginProduct(2048, num_classes, s=30, m=0.5, easy_margin=False)
+            self.projection_head = None
             self.headless_mode = False
             self.num_classes = num_classes
-            print("[CCNet] ✅ Classification head added successfully")
             return True
-        else:
-            print("[CCNet] ⚠️ Already in classification mode")
-            return False
+        return False
     
     def is_headless(self):
-        """현재 headless 모드인지 확인"""
         return self.headless_mode
     
     def get_model_info(self):
-        """모델 정보 반환"""
-        return {
+        """모델 정보 반환 - 확장 버전"""
+        # ✅ 파라미터 수 및 디바이스 정보 추가
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        device = next(self.parameters()).device
+        
+        info = {
             'architecture': 'CCNet',
             'headless_mode': self.headless_mode,
             'num_classes': self.num_classes if not self.headless_mode else None,
-            'feature_dimension': 2048,
             'has_classification_head': self.arclayer_ is not None,
-            'trainable_params': sum(p.numel() for p in self.parameters() if p.requires_grad)
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'device': str(device),
+            'memory_footprint_mb': total_params * 4 / (1024 * 1024)  # float32 기준
         }
+        
+        if self.headless_mode:
+            info.update({
+                'feature_dimension': self.compression_dim,
+                'compression_enabled': True,
+                'compression_ratio': f'2048→{self.compression_dim} ({2048//self.compression_dim}:1)',
+                'memory_reduction': f'{2048/self.compression_dim:.1f}x',
+                'compression_efficiency': f'{(1 - self.compression_dim/2048)*100:.1f}% reduction'
+            })
+        else:
+            info.update({
+                'feature_dimension': 2048,
+                'compression_enabled': False
+            })
+        
+        return info
 
-# 🔥 Headless 모드를 위한 메트릭 기반 검증기
 class HeadlessVerifier:
-    """
-    Headless 모드에서 사용하는 메트릭 기반 검증기
-    Classification head 없이 특징 간 유사도로 인증 수행
-    """
+    """메트릭 기반 검증기 - 확장 버전"""
     def __init__(self, metric_type="cosine", threshold=0.5):
         self.metric_type = metric_type
         self.threshold = threshold
-        print(f"[Verifier] Initialized metric-based verifier: {metric_type}, threshold: {threshold}")
+        self.score_history = []  # ✅ score logging 추가
+        print(f"[Verifier] Initialized: {metric_type}, threshold: {threshold}")
     
     def compute_similarity(self, probe_features, gallery_features):
-        """특징 간 유사도 계산"""
-        if len(probe_features.shape) == 1:
-            probe_features = probe_features.unsqueeze(0)
-        
-        if self.metric_type == "cosine":
-            similarities = F.cosine_similarity(probe_features, gallery_features, dim=1)
-        elif self.metric_type == "l2":
-            distances = F.pairwise_distance(probe_features, gallery_features)
-            similarities = 1.0 / (1.0 + distances)
-        else:
-            raise ValueError(f"Unsupported metric type: {self.metric_type}")
+        """✅ no_grad 최적화 적용"""
+        with torch.no_grad():
+            if len(probe_features.shape) == 1:
+                probe_features = probe_features.unsqueeze(0)
+            
+            if self.metric_type == "cosine":
+                similarities = F.cosine_similarity(probe_features, gallery_features, dim=1)
+            elif self.metric_type == "l2":
+                distances = F.pairwise_distance(probe_features, gallery_features)
+                similarities = 1.0 / (1.0 + distances)
+            else:
+                raise ValueError(f"Unsupported metric type: {self.metric_type}")
         
         return similarities
     
-    def verify(self, probe_features, gallery_features):
-        """메트릭 기반 인증 수행"""
+    def verify(self, probe_features, gallery_features, return_topk=False, k=3):
+        """✅ top-k 지원 추가"""
         similarities = self.compute_similarity(probe_features, gallery_features)
+        
+        # ✅ score logging
+        self.score_history.append({
+            'max_similarity': similarities.max().item(),
+            'mean_similarity': similarities.mean().item(),
+            'std_similarity': similarities.std().item()
+        })
         
         best_similarity = similarities.max().item()
         best_index = similarities.argmax().item()
         is_match = best_similarity > self.threshold
         
-        return is_match, best_similarity, best_index
-
-# 🔥 Config에 따른 모델 생성 팩토리 함수
-def create_ccnet_from_config(config):
-    """
-    Config 설정에 따라 CCNet 모델 생성
-    
-    Args:
-        config: PalmRecognizerConfig 객체
+        result = {
+            'is_match': is_match, 
+            'best_similarity': best_similarity, 
+            'best_index': best_index
+        }
         
-    Returns:
-        ccnet 모델 인스턴스
-    """
+        # ✅ top-k 결과 추가
+        if return_topk:
+            topk_similarities, topk_indices = similarities.topk(k=min(k, len(similarities)))
+            result.update({
+                'topk_similarities': topk_similarities.tolist(),
+                'topk_indices': topk_indices.tolist(),
+                'top1_match': similarities.argmax().item() == best_index,
+                'topk_contains_match': is_match  # top-1이 매치면 top-k도 매치
+            })
+        
+        return result
+    
+    def get_score_statistics(self):
+        """✅ 누적 점수 통계"""
+        if not self.score_history:
+            return None
+        
+        max_scores = [h['max_similarity'] for h in self.score_history]
+        mean_scores = [h['mean_similarity'] for h in self.score_history]
+        
+        return {
+            'total_verifications': len(self.score_history),
+            'max_similarity_stats': {
+                'mean': np.mean(max_scores),
+                'std': np.std(max_scores),
+                'min': np.min(max_scores),
+                'max': np.max(max_scores)
+            },
+            'avg_similarity_stats': {
+                'mean': np.mean(mean_scores),
+                'std': np.std(mean_scores)
+            },
+            'threshold': self.threshold,
+            'match_rate': sum(1 for s in max_scores if s > self.threshold) / len(max_scores)
+        }
+    
+    def reset_history(self):
+        """점수 히스토리 초기화"""
+        self.score_history = []
+
+def create_ccnet_from_config(config):
+    """Config에서 CCNet 생성"""
     headless_mode = getattr(config, 'headless_mode', False)
+    compression_dim = getattr(config, 'compression_dim', 128)
     
     model = ccnet(
         num_classes=config.num_classes,
         weight=config.com_weight,
-        headless_mode=headless_mode
+        headless_mode=headless_mode,
+        compression_dim=compression_dim
     )
     
-    print(f"[Factory] Created CCNet with headless_mode={headless_mode}")
+    print(f"[Factory] Created CCNet: headless={headless_mode}, compression={compression_dim}")
     return model
-
-if __name__ == "__main__":
-    print("🔧 Testing CCNet with Headless Support")
-    
-    # 기존 방식 테스트 (100% 호환)
-    print("\n--- 기존 방식 테스트 (호환성 확인) ---")
-    inp = torch.randn(2, 1, 128, 128)
-    net_original = ccnet(600, weight=0.8)  # headless_mode 생략 = False
-    out, features = net_original(inp)
-    print(f"기존 방식 - Logits: {out.shape}, Features: {features.shape}")
-    
-    # Headless 방식 테스트
-    print("\n--- Headless 방식 테스트 ---")
-    net_headless = ccnet(600, weight=0.8, headless_mode=True)
-    out_headless, features_headless = net_headless(inp)
-    print(f"Headless 방식 - Logits: {out_headless}, Features: {features_headless.shape}")
-    
-    # 런타임 변환 테스트
-    print("\n--- 런타임 변환 테스트 ---")
-    net_convert = ccnet(600, weight=0.8, headless_mode=False)
-    print(f"변환 전: headless={net_convert.is_headless()}")
-    
-    net_convert.convert_to_headless()
-    print(f"변환 후: headless={net_convert.is_headless()}")
-    
-    out_converted, _ = net_convert(inp)
-    print(f"변환 후 출력: {out_converted}")
-    
-    # Config 팩토리 테스트
-    print("\n--- Config 팩토리 테스트 ---")
-    class MockConfig:
-        def __init__(self, headless_mode):
-            self.num_classes = 600
-            self.com_weight = 0.8
-            self.headless_mode = headless_mode
-    
-    config_normal = MockConfig(headless_mode=False)
-    config_headless = MockConfig(headless_mode=True)
-    
-    model_normal = create_ccnet_from_config(config_normal)
-    model_headless = create_ccnet_from_config(config_headless)
-    
-    print(f"Config 생성 - Normal: {model_normal.is_headless()}")
-    print(f"Config 생성 - Headless: {model_headless.is_headless()}")

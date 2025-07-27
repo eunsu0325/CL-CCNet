@@ -104,56 +104,70 @@ class CoconutSystem:
         print(f"[System] Mode: {'Headless' if self.headless_mode else 'Classification'}")
         print(f"[System] Continual batch size: {self.continual_batch_size}")
         print(f"[System] Starting from step: {self.learner_step_count}")
+# framework/coconut.py에서 _initialize_models_with_headless 메서드 수정
 
-    def _initialize_models_with_headless(self):
-        """Headless 지원으로 모델 초기화 (기존과 동일)"""
-        print(f"[System] Initializing CCNet models (headless: {self.headless_mode})...")
-        cfg_model = self.config.palm_recognizer
-        
-        self.predictor_net = ccnet(
-            num_classes=cfg_model.num_classes,
-            weight=cfg_model.com_weight,
-            headless_mode=self.headless_mode
-        ).to(self.device)
-        
-        self.learner_net = ccnet(
-            num_classes=cfg_model.num_classes,
-            weight=cfg_model.com_weight,
-            headless_mode=self.headless_mode
-        ).to(self.device)
-        
-        # 사전 훈련된 가중치 로드
-        weights_path = cfg_model.load_weights_folder
-        print(f"[System] Loading pretrained weights from: {weights_path}")
-        try:
-            full_state_dict = torch.load(weights_path, map_location=self.device)
+        def _initialize_models_with_headless(self):
+            """Headless 지원으로 모델 초기화 - 128차원 압축 지원"""
+            print(f"[System] Initializing CCNet models (headless: {self.headless_mode})...")
+            cfg_model = self.config.palm_recognizer
             
+            # 🔥 NEW: compression_dim 설정 추가
+            compression_dim = getattr(cfg_model, 'compression_dim', 128)
+            
+            self.predictor_net = ccnet(
+                num_classes=cfg_model.num_classes,
+                weight=cfg_model.com_weight,
+                headless_mode=self.headless_mode,
+                compression_dim=compression_dim  # ✅ 압축 차원 전달
+            ).to(self.device)
+            
+            self.learner_net = ccnet(
+                num_classes=cfg_model.num_classes,
+                weight=cfg_model.com_weight,
+                headless_mode=self.headless_mode,
+                compression_dim=compression_dim  # ✅ 압축 차원 전달
+            ).to(self.device)
+            
+            # 🔥 NEW: 압축 차원 저장 (다른 메서드에서 사용)
+            self.feature_dimension = compression_dim if self.headless_mode else 2048
+            
+            # 사전 훈련된 가중치 로드 (기존과 동일)
+            weights_path = cfg_model.load_weights_folder
+            print(f"[System] Loading pretrained weights from: {weights_path}")
+            try:
+                full_state_dict = torch.load(weights_path, map_location=self.device)
+                
+                if self.headless_mode:
+                    print("[System] 🔪 Removing classification head from pretrained weights...")
+                    filtered_state_dict = {k: v for k, v in full_state_dict.items() 
+                                        if not k.startswith('arclayer_')}
+                    print(f"   Removed {len(full_state_dict) - len(filtered_state_dict)} head parameters")
+                    
+                    self.predictor_net.load_state_dict(filtered_state_dict, strict=False)
+                    self.learner_net.load_state_dict(filtered_state_dict, strict=False)
+                    print("[System] ✅ Headless models loaded (head removed)")
+                else:
+                    self.predictor_net.load_state_dict(full_state_dict)
+                    self.learner_net.load_state_dict(full_state_dict)
+                    print("[System] ✅ Full models loaded (head included)")
+                    
+            except FileNotFoundError:
+                print(f"[System] ⚠️ Pretrained weights not found. Starting with random weights.")
+            except Exception as e:
+                print(f"[System] ❌ Failed to load weights: {e}")
+                
+            self.predictor_net.eval()
+            self.learner_net.train()
+            
+            pred_info = self.predictor_net.get_model_info()
+            learn_info = self.learner_net.get_model_info()
+            print(f"[System] Predictor: {pred_info}")
+            print(f"[System] Learner: {learn_info}")
+            
+            # 🔥 NEW: 차원 일관성 확인
+            print(f"[System] 🎯 Feature dimension: {self.feature_dimension}D")
             if self.headless_mode:
-                print("[System] 🔪 Removing classification head from pretrained weights...")
-                filtered_state_dict = {k: v for k, v in full_state_dict.items() 
-                                     if not k.startswith('arclayer_')}
-                print(f"   Removed {len(full_state_dict) - len(filtered_state_dict)} head parameters")
-                
-                self.predictor_net.load_state_dict(filtered_state_dict, strict=False)
-                self.learner_net.load_state_dict(filtered_state_dict, strict=False)
-                print("[System] ✅ Headless models loaded (head removed)")
-            else:
-                self.predictor_net.load_state_dict(full_state_dict)
-                self.learner_net.load_state_dict(full_state_dict)
-                print("[System] ✅ Full models loaded (head included)")
-                
-        except FileNotFoundError:
-            print(f"[System] ⚠️ Pretrained weights not found. Starting with random weights.")
-        except Exception as e:
-            print(f"[System] ❌ Failed to load weights: {e}")
-            
-        self.predictor_net.eval()
-        self.learner_net.train()
-        
-        pred_info = self.predictor_net.get_model_info()
-        learn_info = self.learner_net.get_model_info()
-        print(f"[System] Predictor: {pred_info}")
-        print(f"[System] Learner: {learn_info}")
+                print(f"[System] 🗜️ Compression: 2048 → {compression_dim} ({2048//compression_dim}:1)")
 
     def _initialize_controlled_replay_buffer(self):
         """🔥 NEW: 제어된 배치 구성 리플레이 버퍼 초기화"""
