@@ -33,6 +33,7 @@ PalmRecognizer:
   learning_rate: 0.001
   batch_size: 1024  # 🔥 사전훈련용 배치사이즈 (연속학습과 별개)
   load_weights_folder: "./results/checkpoint/net_params_best.pth"
+  compression_dim: Optional[int] = 128
   
   # 🔥 Headless Configuration
   headless_mode: false

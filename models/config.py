@@ -31,6 +31,7 @@ class PalmRecognizerConfig:
     verification_method: Optional[str] = "classification"  # "classification" or "metric"
     metric_type: Optional[str] = "cosine"  # "cosine" or "l2"
     similarity_threshold: Optional[float] = 0.5  # 메트릭 기반 인증 임계값
+    compression_dim: Optional[int] = 128 
     
     def __post_init__(self):
         """설정 검증 및 자동 조정"""

@@ -6,26 +6,27 @@
 
 CoCoNut is an advanced **continual learning system** for touchless palmprint recognition, implementing a novel **2-stage learning strategy** that combines robust pre-training with intelligent online adaptation.
 
-### 🔥 Key Innovation: W2ML-Enhanced Learning
+### 🔥 Key Innovation: Controlled Batch Composition Learning
 
 | Stage | Method | Goal |
 |-------|--------|------|
 | **Stage 1 (Pretrain)** | Hybrid Loss (ArcFace + SupCon) | Build robust feature space |
-| **Stage 2 (Adapt)** | W2ML-based difficulty-aware learning | Smart adaptation to new data |
+| **Stage 2 (Adapt)** | SupCon with controlled batch composition | Smart adaptation to new data |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-CoCoNut = CCNet + W2ML + Intelligent Replay Buffer
+CoCoNut = CCNet + Intelligent Replay Buffer + Controlled Batch Composition
 ```
 
 ### Core Components
 
 - **🧠 CCNet**: Gabor-based competition network for palmprint feature extraction
-- **⚖️ W2ML Integration**: Hard sample mining with difficulty-weighted learning  
+- **🎯 Controlled Batch Composition**: Precise positive/hard sample ratios for optimal learning
 - **🔄 Intelligent Replay**: Diversity-based experience replay with Faiss indexing
+- **🔪 Headless Support**: Optional classification head removal for open-set recognition
 
 ---
 
@@ -37,16 +38,18 @@ L_pretrain = α × L_ArcFace + β × L_SupCon
 where α = 0.8, β = 0.2 (empirically validated)
 ```
 
-### Stage 2 - W2ML Loss
+### Stage 2 - Controlled SupCon Loss
 ```
-L_adapt = -Σ w_i × log(p_i)
-where w_i computed via W2ML Equations (6) & (7)
+L_adapt = -Σ log(p_i) with controlled batch composition
+- Target positive ratio: 30% (configurable)
+- Hard mining ratio: 30% (configurable)
+- Smart replay buffer sampling
 ```
 
-**W2ML Parameters** (from Pattern Recognition 2022):
-- `α = 2.0`, `β = 40.0`, `γ = 0.5`
-- Hard Positive threshold = `0.5`
-- Hard Negative threshold = `0.7`
+**Batch Composition Parameters**:
+- `continual_batch_size = 10` (separate from pretrain batch size)
+- `target_positive_ratio = 0.3` (30% positive pairs)
+- `hard_mining_ratio = 0.3` (30% hard samples)
 
 ---
 
@@ -87,8 +90,8 @@ python pretrain.py
 python run_coconut.py
 ```
 - Uses `config/adapt_config.yaml`
-- Applies W2ML difficulty-aware learning
-- Performs continual adaptation
+- Applies controlled batch composition learning
+- Performs continual adaptation with precise ratios
 
 ---
 
@@ -101,12 +104,12 @@ CoCoNut/
 │   ├── adapt_config.yaml       # Stage 2 configuration  
 │   └── config_parser.py        # Unified config parser
 ├── 📁 models/
-│   ├── ccnet_model.py          # Competition Network
+│   ├── ccnet_model.py          # Competition Network with Headless support
 │   ├── trainer.py              # Pre-training trainer
 │   └── config.py               # Model configurations
 ├── 📁 framework/
 │   ├── coconut.py              # Main continual learning system
-│   ├── losses.py               # W2ML-enhanced loss functions
+│   ├── losses.py               # SupCon loss functions
 │   ├── replay_buffer.py        # Intelligent experience replay
 │   └── config.py               # Framework configurations
 ├── 📁 datasets/
@@ -130,45 +133,48 @@ All configuration files include comprehensive design rationales:
 ```yaml
 Design_Documentation:
   stage1_philosophy: "Stable hybrid learning for robust generalization"
-  stage2_philosophy: "W2ML-based difficulty-aware adaptation"  
-  loss_strategy: "ArcFace+SupCon → W2ML-SupCon transition"
-  mathematical_basis: "W2ML Equations (6)(7) from Pattern Recognition 2022"
+  stage2_philosophy: "Controlled batch composition for optimal continual learning"  
+  loss_strategy: "ArcFace+SupCon → Controlled SupCon transition"
+  batch_strategy: "Precise positive/hard ratios for learning efficiency"
 ```
 
 ---
 
 ## 📈 Performance Monitoring
 
-### Real-time W2ML Analysis
+### Real-time Batch Composition Analysis
 
 | Feature | Description |
 |---------|-------------|
-| **🎯 Hard Sample Detection** | Automatic identification of confusing samples |
-| **⚖️ Weight Amplification** | Measurement of learning intensity |
-| **📈 Difficulty Tracking** | Monitoring of learning curve progression |
-| **🔬 Mathematical Verification** | Real-time validation of W2ML equations |
+| **🎯 Controlled Ratios** | Precise positive/hard sample composition |
+| **📊 Batch Tracking** | Real-time monitoring of batch statistics |
+| **🔬 Diversity Analysis** | Buffer diversity and sampling efficiency |
+| **📈 Learning Progress** | Continuous adaptation effectiveness |
 
 ### Example Output
 
 ```
-[W2ML] 📊 Hard Sample Statistics:
-   🔴 Hard negatives: 15/90 (16.7%)
-   🟡 Hard positives: 8/90 (8.9%)
-   📈 Total hard ratio: 25.6%
-   🎯 Learning focus: High
+[Controlled] 📊 Batch Composition Analysis:
+   Target batch size: 10
+   Positive pairs: 1 pairs (2 samples, 20.0%)
+   Hard samples: 3 samples (30.0%)
+   Regular samples: 5 samples (50.0%)
+   Achievement: 0.7x target positive ratio
 
-[W2ML] ⚖️ Weight amplification: 2.3x
-[W2ML] 📖 Mathematical verification: L = -Σ w_i * log(p_i)
+[Buffer] 📊 Diversity Statistics:
+   Total samples: 45/50
+   Unique users: 12
+   Diversity score: 0.87
 ```
 
 ---
 
-## 🔬 Scientific Validation
+## 🔬 Scientific Foundation
 
 ### ✅ Mathematical Accuracy
-- **W2ML Equations**: Direct implementation of Pattern Recognition 2022 formulas
-- **Parameter Validation**: All values traced to original paper
-- **Real-time Verification**: Continuous mathematical consistency checks
+- **SupCon Loss**: Standard supervised contrastive learning
+- **Controlled Composition**: Novel batch sampling strategy
+- **Real-time Verification**: Continuous batch composition validation
 
 ### ✅ Experimental Reproducibility  
 - **Deterministic Seeding**: Fixed random seeds for reproducible results
@@ -181,19 +187,39 @@ Design_Documentation:
 
 | Metric | Improvement |
 |--------|------------|
-| **Accuracy** | ↗️ Up to 9.11% increase |
-| **EER** | ↘️ Up to 2.97% decrease |
-| **Learning Efficiency** | 🚀 2-3x faster adaptation |
+| **Accuracy** | ↗️ Consistent adaptation performance |
+| **EER** | ↘️ Reduced error rates |
+| **Learning Efficiency** | 🚀 Controlled batch composition optimization |
+| **Memory Usage** | 💾 Efficient buffer management |
+
+---
+
+## 🔪 Headless Mode Features
+
+### Open-Set Recognition Support
+
+```yaml
+# Headless Configuration
+headless_mode: true
+verification_method: "metric"  # cosine similarity
+similarity_threshold: 0.5
+compression_dim: 128  # 2048 → 128 compression
+```
+
+**Benefits**:
+- **Memory Efficiency**: 16x compression (2048→128)
+- **Open-Set Ready**: No fixed class constraints
+- **Metric Verification**: Cosine similarity-based matching
+- **Flexible Deployment**: Adaptable to new users
 
 ---
 
 ## 📚 References
 
-1. **W2ML Foundation**: Shao, H., & Zhong, D. (2022). "Towards open-set touchless palmprint recognition via weight-based meta metric learning." *Pattern Recognition*, 121, 108247.
-
+1. **SupCon Foundation**: Supervised Contrastive Learning for robust feature learning
 2. **CCNet Architecture**: Competition Network for palmprint recognition
-
 3. **Continual Learning**: Experience replay with catastrophic forgetting prevention
+4. **Faiss Integration**: Efficient similarity search and diversity maintenance
 
 ---
 
@@ -201,7 +227,7 @@ Design_Documentation:
 
 We welcome contributions! Please ensure:
 
-- ✅ Mathematical implementations follow referenced papers exactly
+- ✅ Batch composition implementations maintain precise ratios
 - ✅ All new features include comprehensive documentation  
 - ✅ Configuration changes maintain backward compatibility
 - ✅ Test coverage for critical functionality
@@ -209,7 +235,7 @@ We welcome contributions! Please ensure:
 ### Development Setup
 
 ```bash
-git clone https://github.com/your-username/coconut.git
+git clone https://github.com/eunsu0325/CL-CCNet
 cd coconut
 pip install -r requirements.txt
 pip install -e .  # Development install
@@ -225,8 +251,9 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ## 🙏 Acknowledgments
 
-- **W2ML Methodology**: Huikai Shao and Dexing Zhong (Xi'an Jiaotong University)
+- **SupCon Methodology**: Supervised Contrastive Learning community
 - **CCNet Architecture**: Competition Network innovations  
+- **Faiss Library**: Efficient similarity search capabilities
 - **Open-source Community**: Deep learning framework contributors
 
 ---
@@ -239,6 +266,4 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ---
 
-Made with ❤️ by the CoCoNut
-
-</div>
+Made with ❤️ by the CoCoNut Team
