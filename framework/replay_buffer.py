@@ -1,15 +1,13 @@
-# framework/replay_buffer.py - 완전 제어된 배치 구성 버전
+# framework/replay_buffer.py - 스마트 버퍼 저장 로직 추가 (수정 버전)
 
 """
-CoCoNut Intelligent Replay Buffer with Controlled Batch Composition
+CoCoNut Intelligent Replay Buffer with Smart Storage Logic
 
-CORE FEATURES:
-- 🎯 Precise positive/hard sample ratios (e.g., 30%/30%)  
-- 💪 Real hard sample mining with similarity-based selection
-- 🎨 Differentiated augmentation for artificial positive pairs
-- 📊 Comprehensive batch composition reporting
-- 🔧 Config-driven ratio control
-- 🔥 Complete GPU/CPU compatibility
+🔥 NEW FEATURES:
+- 스마트 저장 로직 (smart_add)
+- 긍정쌍 확보를 위한 강제 저장
+- 학습 여부 기반 저장 결정
+- 사용자별 샘플 수 관리
 """
 
 import os
@@ -36,7 +34,7 @@ from PIL import Image
 class CoconutReplayBuffer:
     def __init__(self, config, storage_dir: Path, feature_dimension: int = 128):
         """
-        지능형 리플레이 버퍼 초기화 (완전 제어된 배치 구성)
+        지능형 리플레이 버퍼 초기화 (스마트 저장 로직 포함)
         """
         self.config = config
         self.storage_dir = storage_dir
@@ -46,6 +44,9 @@ class CoconutReplayBuffer:
         self.buffer_size = self.config.max_buffer_size
         self.similarity_threshold = self.config.similarity_threshold
         self.feature_dimension = feature_dimension
+        
+        # 🔥 NEW: 스마트 저장을 위한 설정
+        self.min_samples_per_user = getattr(config, 'min_samples_per_user', 2)
         
         # 🔥 샘플링 전략 설정
         self.sampling_strategy = getattr(self.config, 'sampling_strategy', 'controlled')
@@ -77,13 +78,205 @@ class CoconutReplayBuffer:
         self.state_file = self.storage_dir / 'buffer_state.pkl'
         self._load_state()
 
-        print(f"[Buffer] 🥥 CoCoNut Controlled Batch Replay Buffer initialized")
+        print(f"[Buffer] 🥥 CoCoNut Smart Replay Buffer initialized")
         print(f"[Buffer] Strategy: {self.sampling_strategy}")
         print(f"[Buffer] Max buffer size: {self.buffer_size}")
+        print(f"[Buffer] Min samples per user: {self.min_samples_per_user}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
 
+    def smart_add(self, image: torch.Tensor, user_id: int, learned: bool = False):
+        """
+        🔥 NEW: 스마트 버퍼 저장 - 학습 여부를 고려한 저장 결정
+        
+        Args:
+            image: 저장할 이미지
+            user_id: 사용자 ID
+            learned: 이 샘플이 학습에 사용되었는지 여부
+            
+        Returns:
+            str: 저장 결정 이유
+        """
+        
+        existing_user_samples = [item for item in self.image_storage 
+                               if item['user_id'] == user_id]
+        
+        # Case 1: 완전 새로운 사용자 - 무조건 저장
+        if len(existing_user_samples) == 0:
+            reason = "new_user_first_sample"
+            self._force_store(image, user_id, reason)
+            return reason
+        
+        # Case 2: 기존 사용자, 샘플 부족 - 긍정쌍 위해 저장
+        if len(existing_user_samples) < self.min_samples_per_user:
+            reason = "ensuring_positive_pairs"
+            self._force_store(image, user_id, reason)
+            return reason
+        
+        # Case 3: 충분한 샘플 보유 - 다양성 기반 판단
+        if learned:
+            # 이미 학습에 활용했으므로 엄격한 다양성 기준 적용
+            try:
+                max_similarity = self._compute_max_similarity_for_user(image, user_id)
+                if max_similarity < self.similarity_threshold:
+                    reason = "diversity_based_storage_after_learning"
+                    self._force_store(image, user_id, reason)
+                    return reason
+                else:
+                    reason = f"too_similar_after_learning_{max_similarity:.3f}"
+                    return reason
+            except Exception as e:
+                print(f"[Buffer] ⚠️ Similarity computation failed: {e}")
+                reason = "diversity_check_failed_store_anyway"
+                self._force_store(image, user_id, reason)
+                return reason
+        else:
+            # 학습 안했으면 저장해서 나중에 활용 기회 제공
+            reason = "not_learned_store_for_future"
+            self._force_store(image, user_id, reason)
+            return reason
+
+    def _force_store(self, image: torch.Tensor, user_id: int, reason: str):
+        """🔥 NEW: 강제 저장 (버퍼 공간 확보 후 저장)"""
+        # 버퍼가 가득 찬 경우 공간 확보
+        if len(self.image_storage) >= self.buffer_size:
+            self._smart_cull_for_positive_pairs()
+
+        unique_id = len(self.image_storage)
+        self.image_storage.append({
+            'image': image.cpu().clone(),
+            'user_id': user_id,
+            'id': unique_id,
+            'storage_reason': reason
+        })
+        
+        # 임베딩도 저장 (기존 방식)
+        if hasattr(self, 'stored_embeddings'):
+            try:
+                with torch.no_grad():
+                    embedding = self._extract_feature_for_diversity(image.to(self.device))
+                    embedding_np = embedding.cpu().numpy().astype('float32')
+                    self.stored_embeddings.append(embedding_np.copy())
+                    
+                    # Faiss 인덱스 업데이트
+                    if FAISS_AVAILABLE and self.faiss_index is not None:
+                        faiss.normalize_L2(embedding_np)
+                        self.faiss_index.add_with_ids(embedding_np.reshape(1, -1), np.array([unique_id]))
+                        
+            except Exception as e:
+                print(f"[Buffer] ⚠️ Embedding extraction failed: {e}")
+        
+        # 메타데이터 업데이트
+        if hasattr(self, 'metadata'):
+            self.metadata[unique_id] = {'user_id': user_id, 'reason': reason}
+
+        print(f"[Buffer] ✅ Force stored sample (ID: {unique_id}, User: {user_id}, Reason: {reason})")
+
+    def _compute_max_similarity_for_user(self, image: torch.Tensor, user_id: int):
+        """🔥 NEW: 특정 사용자의 샘플들과의 최대 유사도 계산"""
+        user_samples = [item for item in self.image_storage if item['user_id'] == user_id]
+        
+        if len(user_samples) == 0:
+            return 0.0
+        
+        # 새로운 이미지의 특징 추출
+        with torch.no_grad():
+            new_embedding = self._extract_feature_for_diversity(image.to(self.device))
+            new_embedding_np = new_embedding.cpu().numpy().flatten()
+        
+        max_sim = 0.0
+        for sample in user_samples:
+            try:
+                # 기존 샘플의 특징 추출
+                stored_image = sample['image'].to(self.device)
+                with torch.no_grad():
+                    stored_embedding = self._extract_feature_for_diversity(stored_image)
+                    stored_embedding_np = stored_embedding.cpu().numpy().flatten()
+                
+                # 코사인 유사도 계산
+                similarity = np.dot(new_embedding_np, stored_embedding_np) / (
+                    np.linalg.norm(new_embedding_np) * np.linalg.norm(stored_embedding_np) + 1e-8
+                )
+                max_sim = max(max_sim, similarity)
+            except Exception as e:
+                print(f"[Buffer] ⚠️ Similarity calculation failed for sample: {e}")
+                continue
+        
+        return max_sim
+
+    def _smart_cull_for_positive_pairs(self):
+        """🔥 NEW: 긍정쌍을 보존하면서 지능적 큐레이션"""
+        print(f"[Buffer] 🔄 Smart culling to preserve positive pairs...")
+        
+        # 1. 사용자별 샘플 수 분석
+        user_counts = {}
+        for item in self.image_storage:
+            user_id = item['user_id']
+            user_counts[user_id] = user_counts.get(user_id, 0) + 1
+        
+        # 2. 샘플이 많은 사용자부터 제거 대상 선정
+        over_sampled_users = [uid for uid, count in user_counts.items() 
+                             if count > self.min_samples_per_user]
+        
+        if over_sampled_users:
+            # 가장 많은 샘플을 가진 사용자의 가장 유사한 샘플 제거
+            victim_user = max(over_sampled_users, key=lambda uid: user_counts[uid])
+            victim_sample_idx = self._find_most_similar_sample_for_user(victim_user)
+            
+            if victim_sample_idx is not None:
+                victim_id = self.image_storage[victim_sample_idx]['id']
+                
+                # 제거 실행
+                del self.image_storage[victim_sample_idx]
+                if victim_sample_idx < len(self.stored_embeddings):
+                    del self.stored_embeddings[victim_sample_idx]
+                if victim_id in self.metadata:
+                    del self.metadata[victim_id]
+                
+                print(f"[Buffer] 🗑️ Removed redundant sample (User: {victim_user}, ID: {victim_id})")
+            else:
+                # 기존 방식으로 폴백
+                self._cull()
+        else:
+            # 모든 사용자가 최소 샘플 이하면 기존 방식 사용
+            self._cull()
+
+    def _find_most_similar_sample_for_user(self, user_id: int):
+        """특정 사용자의 가장 유사한 샘플 찾기"""
+        user_samples = [(i, item) for i, item in enumerate(self.image_storage) 
+                       if item['user_id'] == user_id]
+        
+        if len(user_samples) < 2:
+            return None
+        
+        max_similarity = -1
+        most_similar_idx = None
+        
+        for i, (idx1, sample1) in enumerate(user_samples):
+            for j, (idx2, sample2) in enumerate(user_samples[i+1:], i+1):
+                try:
+                    # 두 샘플 간 유사도 계산
+                    img1 = sample1['image'].to(self.device)
+                    img2 = sample2['image'].to(self.device)
+                    
+                    with torch.no_grad():
+                        emb1 = self._extract_feature_for_diversity(img1).cpu().numpy().flatten()
+                        emb2 = self._extract_feature_for_diversity(img2).cpu().numpy().flatten()
+                    
+                    similarity = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2) + 1e-8)
+                    
+                    if similarity > max_similarity:
+                        max_similarity = similarity
+                        # 더 최근 샘플을 제거 (인덱스가 큰 것)
+                        most_similar_idx = max(idx1, idx2)
+                        
+                except Exception as e:
+                    print(f"[Buffer] ⚠️ Similarity calculation failed: {e}")
+                    continue
+        
+        return most_similar_idx
+
     def update_batch_composition_config(self, target_positive_ratio: float, hard_mining_ratio: float):
-        """🔥 배치 구성 비율 업데이트 (CoconutSystem에서 호출)"""
+        """배치 구성 비율 업데이트 (CoconutSystem에서 호출)"""
         self.target_positive_ratio = target_positive_ratio
         self.hard_ratio = hard_mining_ratio
         print(f"[Buffer] 🎯 Batch composition config updated:")
@@ -139,7 +332,7 @@ class CoconutReplayBuffer:
         return features
 
     def add(self, image: torch.Tensor, user_id: int):
-        """새로운 경험을 버퍼에 추가 (GPU/CPU 완전 호환)"""
+        """새로운 경험을 버퍼에 추가 (기존 방식 - 호환성 유지)"""
         
         with torch.no_grad():
             # 🔥 이미지를 모델 device로 강제 이동
@@ -204,7 +397,7 @@ class CoconutReplayBuffer:
         return max_sim
 
     def _cull(self):
-        """가장 중복되는 데이터 제거"""
+        """가장 중복되는 데이터 제거 (기존 방식)"""
         if len(self.stored_embeddings) < 2:
             return
 
@@ -277,7 +470,7 @@ class CoconutReplayBuffer:
     def sample_with_controlled_composition(self, batch_size: int, new_embedding: torch.Tensor = None, 
                                          current_user_id: int = None) -> Tuple[List, List]:
         """
-        🔥 핵심 메서드: 제어된 배치 구성으로 정확한 비율 샘플링
+        제어된 배치 구성으로 정확한 비율 샘플링 (기존 방식 유지)
         """
         print(f"🎯 [Controlled] Creating controlled batch (size: {batch_size})")
         print(f"   Target positive ratio: {self.target_positive_ratio:.1%}")
@@ -307,310 +500,4 @@ class CoconutReplayBuffer:
 
         selected_indices = []
         selected_labels = []
-        used_user_ids = set()
-        
-        # 2. 🎯 제한된 Positive Pairs 생성
-        pairs_created = self._create_limited_positive_pairs(
-            target_positive_pairs, selected_indices, selected_labels, used_user_ids)
-        
-        # 3. 💪 Hard Samples 선택
-        hard_added = 0
-        if self.enable_hard_mining and new_embedding is not None and target_hard_samples > 0:
-            hard_added = self._select_controlled_hard_samples(
-                target_hard_samples, new_embedding, current_user_id,
-                selected_indices, selected_labels, used_user_ids)
-        
-        # 4. 📦 Regular Samples로 나머지 채우기
-        remaining_slots = batch_size - len(selected_indices)
-        regular_added = self._fill_with_regular_samples(
-            remaining_slots, selected_indices, selected_labels, used_user_ids)
-        
-        # 5. 📊 실제 구성 검증 및 리포트
-        final_images = self._convert_indices_to_samples(selected_indices)
-        self._report_final_composition(selected_labels, batch_size, pairs_created, hard_added, regular_added)
-        
-        return final_images, selected_labels
-
-    def _create_limited_positive_pairs(self, target_pairs: int, selected_indices: List,
-                                     selected_labels: List, used_user_ids: set) -> int:
-        """제한된 수의 Positive Pairs만 생성"""
-        print(f"🎯 [Positive] Creating exactly {target_pairs} positive pairs...")
-        
-        if target_pairs == 0:
-            return 0
-        
-        user_groups = {}
-        for i, item in enumerate(self.image_storage):
-            user_id = item['user_id']
-            if user_id not in user_groups:
-                user_groups[user_id] = []
-            user_groups[user_id].append(i)
-        
-        multi_sample_users = {uid: indices for uid, indices in user_groups.items() 
-                             if len(indices) >= 2}
-        
-        if len(multi_sample_users) == 0:
-            print(f"[Positive] ⚠️ No multi-sample users available")
-            return 0
-        
-        available_users = list(multi_sample_users.keys())
-        pairs_created = 0
-        
-        for _ in range(target_pairs):
-            if not available_users:
-                break
-                
-            unused_users = [uid for uid in available_users if uid not in used_user_ids]
-            selected_user = random.choice(unused_users if unused_users else available_users)
-            
-            user_samples = multi_sample_users[selected_user]
-            if len(user_samples) >= 2:
-                pair = random.sample(user_samples, 2)
-                selected_indices.extend(pair)
-                selected_labels.extend([selected_user, selected_user])
-                used_user_ids.add(selected_user)
-                pairs_created += 1
-                
-                print(f"   ✅ Pair {pairs_created}: User {selected_user} (indices: {pair})")
-        
-        print(f"✅ [Positive] Created {pairs_created}/{target_pairs} positive pairs")
-        return pairs_created
-
-    def _select_controlled_hard_samples(self, target_hard: int, new_embedding: torch.Tensor,
-                                      current_user_id: int, selected_indices: List,
-                                      selected_labels: List, used_user_ids: set) -> int:
-        """제어된 Hard Sample 선택"""
-        print(f"💪 [Hard] Selecting {target_hard} hard samples...")
-        
-        if len(self.stored_embeddings) == 0:
-            return 0
-        
-        available_indices = [i for i in range(len(self.image_storage)) 
-                           if i not in selected_indices]
-        
-        if len(available_indices) == 0:
-            return 0
-        
-        # 🔥 Hard Score 계산
-        buffer_embeddings = np.array([self.stored_embeddings[i] for i in available_indices])
-        new_emb = new_embedding.cpu().numpy().flatten()
-        
-        hard_candidates = []
-        for idx, buffer_idx in enumerate(available_indices):
-            buffer_emb = buffer_embeddings[idx].flatten()
-            
-            similarity = np.dot(new_emb, buffer_emb) / (
-                np.linalg.norm(new_emb) * np.linalg.norm(buffer_emb) + 1e-8)
-            
-            user_id = self.image_storage[buffer_idx]['user_id']
-            is_same_user = user_id == current_user_id
-            
-            # Hard Score 정의
-            if is_same_user:
-                hard_score = 1.0 - similarity  # 낮은 유사도일수록 높은 hard score
-            else:
-                hard_score = similarity       # 높은 유사도일수록 높은 hard score
-                
-            hard_candidates.append({
-                'buffer_index': buffer_idx,
-                'hard_score': hard_score,
-                'similarity': similarity,
-                'is_same_user': is_same_user,
-                'user_id': user_id
-            })
-        
-        hard_candidates.sort(key=lambda x: x['hard_score'], reverse=True)
-        
-        hard_added = 0
-        for candidate in hard_candidates[:target_hard]:
-            selected_indices.append(candidate['buffer_index'])
-            selected_labels.append(candidate['user_id'])
-            hard_added += 1
-            
-            sample_type = "Hard Positive" if candidate['is_same_user'] else "Hard Negative"
-            print(f"   💪 Hard {hard_added}: User {candidate['user_id']} ({sample_type})")
-        
-        print(f"✅ [Hard] Selected {hard_added}/{target_hard} hard samples")
-        return hard_added
-
-    def _fill_with_regular_samples(self, remaining_slots: int, selected_indices: List,
-                                 selected_labels: List, used_user_ids: set) -> int:
-        """Regular Samples로 나머지 슬롯 채우기"""
-        if remaining_slots <= 0:
-            return 0
-            
-        print(f"📦 [Regular] Filling {remaining_slots} remaining slots...")
-        
-        available_indices = [i for i in range(len(self.image_storage)) 
-                           if i not in selected_indices]
-        
-        if len(available_indices) == 0:
-            return 0
-        
-        unused_user_indices = []
-        used_user_indices = []
-        
-        for idx in available_indices:
-            user_id = self.image_storage[idx]['user_id']
-            if user_id not in used_user_ids:
-                unused_user_indices.append(idx)
-            else:
-                used_user_indices.append(idx)
-        
-        priority_indices = unused_user_indices + used_user_indices
-        selected_count = min(remaining_slots, len(priority_indices))
-        chosen_indices = priority_indices[:selected_count]
-        
-        regular_added = 0
-        for idx in chosen_indices:
-            user_id = self.image_storage[idx]['user_id']
-            selected_indices.append(idx)
-            selected_labels.append(user_id)
-            regular_added += 1
-            used_user_ids.add(user_id)
-        
-        print(f"✅ [Regular] Added {regular_added}/{remaining_slots} regular samples")
-        return regular_added
-
-    def _report_final_composition(self, labels: List, batch_size: int, 
-                                pairs_created: int, hard_added: int, regular_added: int):
-        """최종 배치 구성 상세 리포트"""
-        user_counts = {}
-        for label in labels:
-            user_counts[label] = user_counts.get(label, 0) + 1
-        
-        actual_positive_pairs = sum(1 for count in user_counts.values() if count >= 2)
-        actual_positive_samples = sum(count for count in user_counts.values() if count >= 2)
-        
-        positive_ratio = actual_positive_samples / batch_size if batch_size > 0 else 0
-        hard_ratio = hard_added / batch_size if batch_size > 0 else 0
-        
-        print(f"📊 [Final] Achieved batch composition:")
-        print(f"   Positive pairs: {actual_positive_pairs} pairs ({actual_positive_samples} samples, {positive_ratio:.1%})")
-        print(f"   Hard samples: {hard_added} samples ({hard_ratio:.1%})")
-        print(f"   Regular samples: {regular_added} samples")
-
-    def sample_with_replacement(self, batch_size: int, new_embedding: torch.Tensor = None, 
-                              current_user_id: int = None) -> Tuple[List, List]:
-        """메인 샘플링 인터페이스"""
-        if self.sampling_strategy == "controlled":
-            return self.sample_with_controlled_composition(batch_size, new_embedding, current_user_id)
-        else:
-            return self.sample_with_controlled_composition(batch_size, new_embedding, current_user_id)
-
-    def _convert_indices_to_samples(self, indices: List) -> List:
-        """인덱스를 실제 이미지 샘플로 변환 (GPU 호환성 보장)"""
-        images = []
-        
-        for idx in indices:
-            base_image = self.image_storage[idx]['image'].clone()  # CPU에서 로드
-            augmented = self._apply_differentiated_augmentation(base_image)
-            # 🔥 모델 device로 이동
-            augmented = augmented.to(self.device)
-            images.append(augmented)
-        return images
-
-    def _setup_augmentation_transforms(self):
-        """증강 변환 설정"""
-        if not self.enable_augmentation or not self.aug_config:
-            self.geometric_transform = None
-            return
-            
-        if getattr(self.aug_config, 'enable_geometric', False):
-            max_rotation = getattr(self.aug_config, 'max_rotation_degrees', 3)
-            max_translation = getattr(self.aug_config, 'max_translation_ratio', 0.05)
-            
-            self.geometric_transform = transforms.RandomAffine(
-                degrees=(-max_rotation, max_rotation),
-                translate=(max_translation, max_translation),
-                interpolation=transforms.InterpolationMode.BILINEAR
-            )
-        else:
-            self.geometric_transform = None
-
-    def _apply_differentiated_augmentation(self, image, sample_info="", intensity="normal"):
-        """차별화된 증강 적용"""
-        if not self.enable_augmentation:
-            return image
-            
-        result = image.clone()
-        
-        if (self.geometric_transform and 
-            getattr(self.aug_config, 'enable_geometric', False) and
-            np.random.random() < 0.3):
-            result = self.geometric_transform(result)
-        
-        return result
-
-    def get_diversity_stats(self):
-        """버퍼 다양성 통계"""
-        if len(self.image_storage) == 0:
-            return {
-                'total_samples': 0,
-                'unique_users': 0,
-                'user_distribution': {},
-                'diversity_score': 0.0
-            }
-        
-        user_counts = {}
-        for item in self.image_storage:
-            user_id = item['user_id']
-            user_counts[user_id] = user_counts.get(user_id, 0) + 1
-        
-        unique_users = len(user_counts)
-        diversity_score = unique_users / len(self.image_storage)
-        
-        return {
-            'total_samples': len(self.image_storage),
-            'unique_users': unique_users,
-            'user_distribution': dict(sorted(user_counts.items())),
-            'diversity_score': diversity_score
-        }
-
-    def save_state(self):
-        """상태 저장"""
-        if not FAISS_AVAILABLE or self.faiss_index is None:
-            return
-            
-        try:
-            data_to_save = {
-                'faiss_index_data': faiss.serialize_index(self.faiss_index),
-                'metadata': self.metadata,
-                'image_storage': self.image_storage,
-                'stored_embeddings': self.stored_embeddings
-            }
-            
-            with open(self.state_file, 'wb') as f:
-                pickle.dump(data_to_save, f)
-            
-            diversity_stats = self.get_diversity_stats()
-            print(f"[Buffer] 💾 Saved {len(self.image_storage)} samples")
-        except Exception as e:
-            print(f"[Buffer] ❌ Save failed: {e}")
-
-    def _load_state(self):
-        """상태 로드"""
-        if not self.state_file.exists():
-            return
-
-        try:
-            with open(self.state_file, 'rb') as f:
-                saved_data = pickle.load(f)
-                
-            if FAISS_AVAILABLE and 'faiss_index_data' in saved_data:
-                self.faiss_index = faiss.deserialize_index(saved_data['faiss_index_data'])
-                self.metadata = saved_data.get('metadata', {})
-                self.image_storage = saved_data.get('image_storage', [])
-                self.stored_embeddings = saved_data.get('stored_embeddings', [])
-                
-                diversity_stats = self.get_diversity_stats()
-                print(f"[Buffer] ✅ Restored {len(self.image_storage)} samples")
-                
-        except Exception as e:
-            print(f"[Buffer] ❌ Load failed: {e}")
-            self.faiss_index = None
-            self.metadata = {}
-            self.image_storage = []
-            self.stored_embeddings = []
-
-print("✅ CoconutReplayBuffer with Complete GPU/CPU Compatibility!")
+        use

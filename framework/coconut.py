@@ -1,14 +1,13 @@
-# framework/coconut.py - 완전 제어된 배치 구성 시스템
+# framework/coconut.py - 완전 제어된 배치 구성 시스템 (수정 버전)
 
 """
 === COCONUT STAGE 2: CONTROLLED BATCH CONTINUAL LEARNING ===
 
-NEW FEATURES:
-- 🎯 Precise positive/hard sample ratios (30%/30% configurable)
-- 💪 Real hard sample mining with embedding similarity
-- 📊 Comprehensive batch composition tracking
-- 🔧 Separate continual learning batch size
-- 🚫 Zero mask warning elimination
+🔥 MODIFIED FEATURES:
+- 🎯 학습 먼저, 저장 나중 순서로 변경
+- 💪 새로운 샘플 즉시 학습 활용
+- 📊 스마트 버퍼 저장 로직
+- 🔧 긍정쌍 확보를 위한 강제 저장
 """
 
 import torch
@@ -45,13 +44,12 @@ class CoconutSystem:
         Continual Learning CoCoNut System with Controlled Batch Composition
         
         🔥 NEW FEATURES:
-        - Precise positive/hard ratios control
-        - Separate continual learning batch size  
-        - Real hard mining with embeddings
-        - Zero mask warning elimination
+        - 학습 먼저, 저장 나중 순서
+        - 새로운 샘플 즉시 활용
+        - 스마트 버퍼 관리
         """
         print("="*80)
-        print("🥥 COCONUT STAGE 2: CONTROLLED BATCH CONTINUAL LEARNING")
+        print("🥥 COCONUT STAGE 2: IMPROVED CONTINUAL LEARNING")
         print("="*80)
         
         self.config = config
@@ -66,14 +64,13 @@ class CoconutSystem:
         # 🔥 NEW: Controlled Batch Composition Configuration
         cfg_learner = self.config.continual_learner
         
-        # 🔥 FIXED: continual_batch_size 사용 (PalmRecognizer.batch_size와 분리)
         self.continual_batch_size = getattr(cfg_learner, 'continual_batch_size', 10)
         self.target_positive_ratio = getattr(cfg_learner, 'target_positive_ratio', 0.3)
         self.hard_mining_ratio = getattr(cfg_learner, 'hard_mining_ratio', 0.3)
         self.enable_hard_mining = getattr(cfg_learner, 'enable_hard_mining', True)
         
-        print(f"🔧 CONTROLLED BATCH COMPOSITION:")
-        print(f"   Continual Batch Size: {self.continual_batch_size} (separate from pretrain)")
+        print(f"🔧 IMPROVED BATCH COMPOSITION:")
+        print(f"   Continual Batch Size: {self.continual_batch_size}")
         print(f"   Target Positive Ratio: {self.target_positive_ratio:.1%}")
         print(f"   Hard Mining Ratio: {self.hard_mining_ratio:.1%}")
         print(f"   Hard Mining Enabled: {self.enable_hard_mining}")
@@ -100,7 +97,7 @@ class CoconutSystem:
         # 이전 체크포인트에서 복원
         self._resume_from_latest_checkpoint()
         
-        print(f"[System] 🥥 CoCoNut Controlled Batch System ready!")
+        print(f"[System] 🥥 CoCoNut Improved System ready!")
         print(f"[System] Mode: {'Headless' if self.headless_mode else 'Classification'}")
         print(f"[System] Continual batch size: {self.continual_batch_size}")
         print(f"[System] Starting from step: {self.learner_step_count}")
@@ -110,27 +107,25 @@ class CoconutSystem:
         print(f"[System] Initializing CCNet models (headless: {self.headless_mode})...")
         cfg_model = self.config.palm_recognizer
         
-        # 🔥 NEW: compression_dim 설정 추가
         compression_dim = getattr(cfg_model, 'compression_dim', 128)
         
         self.predictor_net = ccnet(
             num_classes=cfg_model.num_classes,
             weight=cfg_model.com_weight,
             headless_mode=self.headless_mode,
-            compression_dim=compression_dim  # ✅ 압축 차원 전달
+            compression_dim=compression_dim
         ).to(self.device)
         
         self.learner_net = ccnet(
             num_classes=cfg_model.num_classes,
             weight=cfg_model.com_weight,
             headless_mode=self.headless_mode,
-            compression_dim=compression_dim  # ✅ 압축 차원 전달
+            compression_dim=compression_dim
         ).to(self.device)
         
-        # 🔥 NEW: 압축 차원 저장 (다른 메서드에서 사용)
         self.feature_dimension = compression_dim if self.headless_mode else 2048
         
-        # 사전 훈련된 가중치 로드 (기존과 동일)
+        # 사전 훈련된 가중치 로드
         weights_path = cfg_model.load_weights_folder
         print(f"[System] Loading pretrained weights from: {weights_path}")
         try:
@@ -158,19 +153,11 @@ class CoconutSystem:
         self.predictor_net.eval()
         self.learner_net.train()
         
-        pred_info = self.predictor_net.get_model_info()
-        learn_info = self.learner_net.get_model_info()
-        print(f"[System] Predictor: {pred_info}")
-        print(f"[System] Learner: {learn_info}")
-        
-        # 🔥 NEW: 차원 일관성 확인
         print(f"[System] 🎯 Feature dimension: {self.feature_dimension}D")
-        if self.headless_mode:
-            print(f"[System] 🗜️ Compression: 2048 → {compression_dim} ({2048//compression_dim}:1)")
 
     def _initialize_controlled_replay_buffer(self):
         """🔥 NEW: 제어된 배치 구성 리플레이 버퍼 초기화"""
-        print("[System] Initializing Controlled Batch Replay Buffer...")
+        print("[System] Initializing Improved Replay Buffer...")
         cfg_buffer = self.config.replay_buffer
 
         buffer_storage_path = Path(cfg_buffer.storage_path)
@@ -178,7 +165,7 @@ class CoconutSystem:
         self.replay_buffer = CoconutReplayBuffer(
             config=cfg_buffer,
             storage_dir=buffer_storage_path,
-            feature_dimension=self.feature_dimension  # 🔥 동적으로 설정 (128 or 2048)
+            feature_dimension=self.feature_dimension
         )
         
         # 특징 추출기 설정
@@ -205,7 +192,7 @@ class CoconutSystem:
             )
 
     def _initialize_verification_system(self):
-        """검증 시스템 초기화 (기존과 동일)"""
+        """검증 시스템 초기화"""
         if self.verification_method == 'metric':
             self.verifier = HeadlessVerifier(
                 metric_type=self.metric_type,
@@ -217,7 +204,7 @@ class CoconutSystem:
             print(f"[System] ✅ Classification-based verification")
 
     def _initialize_basic_learning(self):
-        """기본 연속학습 시스템 초기화 (기존과 동일)"""
+        """기본 연속학습 시스템 초기화"""
         print("[System] 🎯 Initializing continual learning...")
         
         cfg_model = self.config.palm_recognizer
@@ -233,11 +220,9 @@ class CoconutSystem:
         )
         
         print(f"[System] ✅ Learning system initialized")
-        print(f"[System] Optimizer: Adam (lr={cfg_model.learning_rate})")
-        print(f"[System] Loss: SupConLoss (temp={getattr(cfg_loss, 'temp', 0.07)})")
 
     def _initialize_enhanced_stats(self):
-        """🔥 NEW: 확장된 통계 초기화 (배치 구성 추적)"""
+        """확장된 통계 초기화"""
         self.simple_stats = {
             'total_learning_steps': 0,
             'buffer_additions': 0,
@@ -247,7 +232,6 @@ class CoconutSystem:
             'batch_sizes': [],
             'buffer_diversity_scores': [],
             'verification_accuracies': [],
-            # 🔥 NEW: Controlled Batch Composition tracking
             'positive_ratios_achieved': [],
             'hard_ratios_achieved': [],
             'regular_ratios_achieved': [],
@@ -260,9 +244,10 @@ class CoconutSystem:
 
     def process_single_frame(self, image: torch.Tensor, user_id: int):
         """
-        🔥 MODIFIED: 제어된 배치 구성으로 단일 프레임 처리
+        🔥 MODIFIED: 개선된 단일 프레임 처리 - 학습 먼저, 저장 나중
         """
         image = image.to(self.device)
+        print(f"\\n[Process] 🎯 Processing new sample for User {user_id}")
 
         # 1. 예측기를 통한 실시간 인증 (기존과 동일)
         self.predictor_net.eval()
@@ -285,105 +270,143 @@ class CoconutSystem:
                 latest_embedding = features.squeeze(0)
         self.learner_net.train()
         
-        # 3. 리플레이 버퍼에 추가 (기존과 동일)
-        buffer_size_before = len(self.replay_buffer.image_storage)
-        self.replay_buffer.add(image, user_id)
-        buffer_size_after = len(self.replay_buffer.image_storage)
-        
-        if buffer_size_after > buffer_size_before:
-            self.simple_stats['buffer_additions'] += 1
-        else:
-            self.simple_stats['buffer_skips'] += 1
-        
-        # 4. 연속학습 조건 확인
+        # 3. 🔥 NEW: 학습 조건 확인 (버퍼 저장 전에!)
         buffer_size = len(self.replay_buffer.image_storage)
         unique_users = len(set([item['user_id'] for item in self.replay_buffer.image_storage]))
         
-        if unique_users < 2:
-            print(f"[Learning] 📊 Waiting for diversity (Dataset pos: {self.global_dataset_index}):")
-            print(f"   Buffer size: {buffer_size}")
-            print(f"   Unique users: {unique_users}/2 minimum")
-            return
+        print(f"[Process] 📊 Current buffer state:")
+        print(f"   Buffer size: {buffer_size}")
+        print(f"   Unique users: {unique_users}")
         
-        # 5. 🔥 NEW: 제어된 배치 구성으로 연속학습 실행
-        self._controlled_continual_learning(image, user_id, latest_embedding)
+        # 4. 🔥 NEW: 조건 만족시 즉시 학습 (새로운 샘플 + 기존 버퍼)
+        should_learn = self._should_start_learning(user_id)
+        learned = False
+        
+        if should_learn:
+            print(f"[Process] 🎯 Starting continual learning...")
+            try:
+                self._improved_continual_learning(image, user_id, latest_embedding)
+                learned = True
+            except Exception as e:
+                print(f"[Process] ❌ Learning failed: {e}")
+                learned = False
+        else:
+            print(f"[Process] ⏳ Learning conditions not met, skipping...")
 
-    def _controlled_continual_learning(self, new_image, new_user_id, new_embedding):
-        """🔥 NEW: 제어된 배치 구성으로 연속학습"""
+        # 5. 🔥 NEW: 학습 완료 후 선별적 버퍼 저장
+        buffer_size_before = len(self.replay_buffer.image_storage)
+        
+        try:
+            storage_decision = self.replay_buffer.smart_add(image, user_id, learned=learned)
+        except AttributeError:
+            # smart_add가 없으면 기존 add 사용
+            print("[Process] ⚠️ smart_add not available, using original add")
+            self.replay_buffer.add(image, user_id)
+            storage_decision = "original_add_used"
+        
+        buffer_size_after = len(self.replay_buffer.image_storage)
+
+        # 6. 통계 업데이트
+        if buffer_size_after > buffer_size_before:
+            self.simple_stats['buffer_additions'] += 1
+            print(f"[Process] ✅ Sample stored in buffer (reason: {storage_decision})")
+        else:
+            self.simple_stats['buffer_skips'] += 1
+            print(f"[Process] ⚠️ Sample not stored (reason: {storage_decision})")
+
+    def _should_start_learning(self, user_id: int) -> bool:
+        """🔥 NEW: 학습 시작 조건 판단"""
+        buffer_size = len(self.replay_buffer.image_storage)
+
+        if buffer_size == 0:
+            print(f"[Learning] 📭 Empty buffer - no learning possible")
+            return False
+
+        # 새로운 사용자인지 확인
+        existing_user_samples = [item for item in self.replay_buffer.image_storage 
+                               if item['user_id'] == user_id]
+
+        if len(existing_user_samples) > 0:
+            print(f"[Learning] 🎯 User {user_id} has {len(existing_user_samples)} samples in buffer - can create positive pairs!")
+            return True
+
+        # 새로운 사용자면 다른 사용자가 있는지 확인
+        unique_users = len(set([item['user_id'] for item in self.replay_buffer.image_storage]))
+
+        if unique_users >= 1:
+            print(f"[Learning] 🆕 New user {user_id}, but {unique_users} other users available - can learn with negatives")
+            return True
+        else:
+            print(f"[Learning] 🚫 New user {user_id}, no other users - cannot learn")
+            return False
+
+    def _improved_continual_learning(self, new_image, new_user_id, new_embedding):
+        """🔥 NEW: 개선된 연속학습 - 새로운 샘플을 포함한 배치로 학습"""
         self.learner_step_count += 1
-        
+
         print(f"[Learning] {'='*70}")
-        print(f"[Learning] CONTROLLED BATCH CONTINUAL STEP {self.learner_step_count}")
-        print(f"[Learning] Mode: {'HEADLESS' if self.headless_mode else 'CLASSIFICATION'}")
+        print(f"[Learning] IMPROVED CONTINUAL STEP {self.learner_step_count}")
+        print(f"[Learning] New sample: User {new_user_id}")
         print(f"[Learning] {'='*70}")
-        
-        cfg_learner = self.config.continual_learner
-        
-        # 🔥 FIXED: continual_batch_size 사용 (PalmRecognizer.batch_size 아님!)
+
+        # 배치 구성: 새로운 샘플 1개 + 리플레이 샘플들
         target_batch_size = self.continual_batch_size
-        
-        print(f"[Learning] 🎯 Creating controlled batch composition...")
-        print(f"   Target batch size: {target_batch_size} (continual learning)")
-        print(f"   Target positive ratio: {self.target_positive_ratio:.1%}")
-        print(f"   Hard mining ratio: {self.hard_mining_ratio:.1%}")
-        
-        # 새로운 샘플 1개 + 리플레이 샘플들로 배치 구성
-        replay_count = target_batch_size - 1  # 새로운 샘플 1개 제외
-        
-        # 🔥 핵심 변경: new_embedding과 current_user_id 실제 전달!
-        print(f"[Learning] 🔗 Calling buffer with embedding (shape: {new_embedding.shape}) and user_id: {new_user_id}")
-        
-        replay_images, replay_labels = self.replay_buffer.sample_with_replacement(
-            replay_count, 
-            new_embedding=new_embedding,  # ✅ 실제 전달됨!
-            current_user_id=new_user_id   # ✅ 실제 전달됨!
-        )
-        
-        # 새로운 샘플과 리플레이 샘플 결합
+        replay_count = max(0, target_batch_size - 1)  # 새로운 샘플 제외
+
+        print(f"[Learning] 🎯 Creating batch with new sample + {replay_count} replay samples")
+
+        # 리플레이 샘플링 (기존 방식 활용)
+        if replay_count > 0:
+            replay_images, replay_labels = self.replay_buffer.sample_with_replacement(
+                replay_count, 
+                new_embedding=new_embedding,
+                current_user_id=new_user_id
+            )
+        else:
+            replay_images, replay_labels = [], []
+
+        # 최종 배치 구성
         all_images = [new_image] + replay_images
         all_labels = [new_user_id] + replay_labels
         actual_batch_size = len(all_images)
-        
-        # 🔥 NEW: 최종 배치 구성 분석
-        self._analyze_final_batch_composition(all_labels, actual_batch_size)
-        
-        print(f"[Learning] 📊 Final Batch Analysis:")
+
+        print(f"[Learning] 📊 Final batch composition:")
         print(f"   Target batch size: {target_batch_size}")
         print(f"   Actual batch size: {actual_batch_size}")
         print(f"   New sample: User {new_user_id}")
         print(f"   Replay samples: {len(replay_labels)}")
-        
+
+        # 배치 구성 분석
+        self._analyze_final_batch_composition(all_labels, actual_batch_size)
+
         # 연속학습 실행
+        cfg_learner = self.config.continual_learner
         total_loss = 0.0
-        processing_start = time.time()
-        
+
         for epoch in range(cfg_learner.adaptation_epochs):
             print(f"[Learning] 🔄 Adaptation epoch {epoch+1}/{cfg_learner.adaptation_epochs}")
-            
+
             if self.headless_mode:
                 epoch_loss = self._run_headless_learning_step(all_images, all_labels)
             else:
                 epoch_loss = self._run_classification_learning_step(all_images, all_labels)
-            
+
             total_loss += epoch_loss
-        
-        processing_time = time.time() - processing_start
+
         average_loss = total_loss / cfg_learner.adaptation_epochs
-        
-        # 🔥 NEW: 확장된 통계 업데이트
-        self._update_enhanced_stats(all_labels, actual_batch_size, average_loss, processing_time)
-        
+
         print(f"[Learning] 📊 Step {self.learner_step_count} Results:")
         print(f"   Average loss: {average_loss:.6f}")
-        print(f"   Processing time: {processing_time*1000:.2f}ms")
         print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
-        
+
         # 모델 동기화 체크
         if self.learner_step_count % cfg_learner.sync_frequency == 0:
             self._sync_weights()
 
+        return average_loss
+
     def _analyze_final_batch_composition(self, labels: list, batch_size: int):
-        """🔥 NEW: 최종 배치 구성 분석 및 Zero Mask 예측"""
+        """최종 배치 구성 분석 및 Zero Mask 예측"""
         user_counts = {}
         for label in labels:
             user_counts[label] = user_counts.get(label, 0) + 1
@@ -415,52 +438,8 @@ class CoconutSystem:
         else:
             print(f"✅ [Analysis] No zero mask warnings expected!")
 
-    def _update_enhanced_stats(self, labels: list, batch_size: int, loss: float, processing_time: float):
-        """🔥 NEW: 확장된 통계 업데이트 (배치 구성 추적)"""
-        # 기존 통계
-        self.simple_stats['total_learning_steps'] += 1
-        self.simple_stats['losses'].append(loss)
-        self.simple_stats['processing_times'].append(processing_time)
-        self.simple_stats['batch_sizes'].append(batch_size)
-        
-        # 🔥 NEW: 배치 구성 상세 통계
-        user_counts = {}
-        for label in labels:
-            user_counts[label] = user_counts.get(label, 0) + 1
-        
-        # 비율 계산
-        positive_samples = sum(count for count in user_counts.values() if count >= 2)
-        positive_pairs = sum(1 for count in user_counts.values() if count >= 2)
-        single_samples = sum(1 for count in user_counts.values() if count == 1)
-        
-        positive_ratio = positive_samples / batch_size
-        single_ratio = single_samples / batch_size
-        regular_ratio = 1.0 - positive_ratio  # 단순화
-        
-        # 통계 저장
-        self.simple_stats['positive_ratios_achieved'].append(positive_ratio)
-        self.simple_stats['positive_pairs_counts'].append(positive_pairs)
-        self.simple_stats['zero_mask_incidents'].append(single_samples)
-        self.simple_stats['batch_compositions'].append({
-            'step': self.learner_step_count,
-            'positive_pairs': positive_pairs,
-            'positive_samples': positive_samples,
-            'positive_ratio': positive_ratio,
-            'single_samples': single_samples,
-            'single_ratio': single_ratio,
-            'unique_users': len(user_counts),
-            'user_distribution': dict(user_counts),
-            'target_positive_ratio': self.target_positive_ratio,
-            'target_hard_ratio': self.hard_mining_ratio,
-            'achievement_ratio': positive_ratio / self.target_positive_ratio if self.target_positive_ratio > 0 else 0
-        })
-        
-        # 버퍼 다양성 통계
-        diversity_stats = self.replay_buffer.get_diversity_stats()
-        self.simple_stats['buffer_diversity_scores'].append(diversity_stats['diversity_score'])
-
     def _run_headless_learning_step(self, images: list, labels: list):
-        """Headless 모드 학습 스텝 (기존과 동일)"""
+        """Headless 모드 학습 스텝"""
         print(f"[Learning] 🧠 Headless learning with {len(images)} samples")
         
         self.learner_net.train()
@@ -494,7 +473,7 @@ class CoconutSystem:
         return loss.item()
 
     def _run_classification_learning_step(self, images: list, labels: list):
-        """Classification 모드 학습 스텝 (기존과 동일)"""
+        """Classification 모드 학습 스텝"""
         print(f"[Learning] 🧠 Classification learning with {len(images)} samples")
         
         self.learner_net.train()
@@ -528,18 +507,18 @@ class CoconutSystem:
         return loss.item()
 
     def _sync_weights(self):
-        """가중치 동기화 (기존과 동일)"""
+        """가중치 동기화"""
         self.predictor_net.load_state_dict(self.learner_net.state_dict())
         self.predictor_net.eval()
         
-        print(f"\n[Sync] 🔄 MODEL SYNCHRONIZATION ({'Headless' if self.headless_mode else 'Classification'})")
+        print(f"\\n[Sync] 🔄 MODEL SYNCHRONIZATION ({'Headless' if self.headless_mode else 'Classification'})")
         print(f"[Sync] {'='*60}")
         print(f"[Sync] ✅ Predictor updated at step {self.learner_step_count}!")
-        print(f"[Sync] {'='*60}\n")
+        print(f"[Sync] {'='*60}\\n")
 
     def run_experiment(self):
-        """연속학습 실험 실행 (기존과 거의 동일, 로그 개선)"""
-        print(f"[System] Starting controlled continual learning from step {self.learner_step_count}...")
+        """연속학습 실험 실행"""
+        print(f"[System] Starting improved continual learning from step {self.learner_step_count}...")
         print(f"[System] Batch configuration: {self.continual_batch_size} samples with {self.target_positive_ratio:.1%} positive, {self.hard_mining_ratio:.1%} hard")
 
         # 타겟 데이터셋 준비
@@ -561,7 +540,7 @@ class CoconutSystem:
         # 이어서 학습할 데이터만 추출
         remaining_data = dataset_list[self.global_dataset_index:]
         
-        for data_offset, (datas, user_id) in enumerate(tqdm(remaining_data, desc="Controlled Continual Learning")):
+        for data_offset, (datas, user_id) in enumerate(tqdm(remaining_data, desc="Improved Continual Learning")):
             
             # 전체 데이터셋에서의 현재 위치 업데이트
             self.global_dataset_index = self.global_dataset_index + data_offset
@@ -569,7 +548,7 @@ class CoconutSystem:
             primary_image = datas[0].squeeze(0)
             user_id = user_id.item()
 
-            # 한 프레임 처리
+            # 🔥 개선된 프레임 처리
             self.process_single_frame(primary_image, user_id)
 
             # 설정된 빈도에 따라 체크포인트 저장
@@ -581,7 +560,7 @@ class CoconutSystem:
         self.global_dataset_index = total_steps
 
         # 실험 종료 후 최종 체크포인트 저장
-        print(f"\n[System] Controlled continual learning experiment finished.")
+        print(f"\\n[System] Improved continual learning experiment finished.")
         print(f"[System] Final stats summary:")
         self._print_final_stats_summary()
         
@@ -589,7 +568,7 @@ class CoconutSystem:
         self.save_system_state()
 
     def _print_final_stats_summary(self):
-        """🔥 NEW: 최종 통계 요약 출력"""
+        """최종 통계 요약 출력"""
         if len(self.simple_stats['positive_ratios_achieved']) == 0:
             print("[Stats] No learning steps completed yet.")
             return
@@ -600,20 +579,15 @@ class CoconutSystem:
         avg_zero_mask = np.mean(self.simple_stats['zero_mask_incidents'])
         total_steps = self.simple_stats['total_learning_steps']
         
-        print(f"📊 [Final Stats] Controlled Batch Composition Results:")
+        print(f"📊 [Final Stats] Improved Batch Composition Results:")
         print(f"   Total learning steps: {total_steps}")
         print(f"   Average positive ratio: {avg_positive_ratio:.1%} (target: {self.target_positive_ratio:.1%})")
         print(f"   Average positive pairs: {avg_positive_pairs:.1f}")
         print(f"   Average zero mask incidents: {avg_zero_mask:.1f}")
         print(f"   Achievement rate: {avg_positive_ratio/self.target_positive_ratio:.1f}x target")
-        
-        if avg_zero_mask < 1.0:
-            print(f"✅ [Success] Zero mask incidents well controlled!")
-        else:
-            print(f"⚠️ [Warning] Still some zero mask incidents occurring")
 
     def _save_complete_checkpoint(self):
-        """완전한 체크포인트 저장 (배치 구성 정보 포함)"""
+        """완전한 체크포인트 저장"""
         step = self.learner_step_count
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -625,10 +599,8 @@ class CoconutSystem:
             'predictor_state_dict': self.predictor_net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'simple_stats': self.simple_stats,
-            # Headless 정보
             'headless_mode': self.headless_mode,
             'verification_method': self.verification_method,
-            # 🔥 NEW: Controlled Batch Composition 정보
             'continual_batch_size': self.continual_batch_size,
             'target_positive_ratio': self.target_positive_ratio,
             'hard_mining_ratio': self.hard_mining_ratio,
@@ -649,13 +621,9 @@ class CoconutSystem:
         
         print(f"[Checkpoint] 💾 Complete checkpoint saved:")
         print(f"   📁 Model: checkpoint_step_{step}.pth")
-        print(f"   🎯 Batch size: {self.continual_batch_size}")
-        print(f"   📊 Positive ratio: {self.target_positive_ratio:.1%}")
-        print(f"   🔧 Mode: {'Headless' if self.headless_mode else 'Classification'}")
-        print(f"   📍 Dataset position: {self.global_dataset_index}")
 
     def save_system_state(self):
-        """시스템 상태 저장 (배치 구성 정보 포함)"""
+        """시스템 상태 저장"""
         custom_save_path = Path('/content/drive/MyDrive/CoCoNut_STAR')
         custom_save_path.mkdir(parents=True, exist_ok=True)
         
@@ -666,21 +634,19 @@ class CoconutSystem:
         ratio_suffix = f"pos{int(self.target_positive_ratio*100)}hard{int(self.hard_mining_ratio*100)}"
         
         # 상세한 파일명으로 구분
-        custom_learner_path = custom_save_path / f'coconut_{mode_suffix}_{batch_suffix}_{ratio_suffix}_model_{timestamp}.pth'
-        custom_predictor_path = custom_save_path / f'coconut_{mode_suffix}_{batch_suffix}_{ratio_suffix}_predictor_{timestamp}.pth'
+        custom_learner_path = custom_save_path / f'coconut_improved_{mode_suffix}_{batch_suffix}_{ratio_suffix}_model_{timestamp}.pth'
+        custom_predictor_path = custom_save_path / f'coconut_improved_{mode_suffix}_{batch_suffix}_{ratio_suffix}_predictor_{timestamp}.pth'
         
         torch.save(self.learner_net.state_dict(), custom_learner_path)
         torch.save(self.predictor_net.state_dict(), custom_predictor_path)
         
-        print(f"[System] ✅ CoCoNut Controlled Batch 모델 저장 완료:")
+        print(f"[System] ✅ CoCoNut Improved 모델 저장 완료:")
         print(f"  🎯 사용자 지정 경로: {custom_save_path}")
         print(f"  📁 Learner 모델: {custom_learner_path.name}")
         print(f"  📁 Predictor 모델: {custom_predictor_path.name}")
-        print(f"  🔧 Configuration: {mode_suffix}, batch={self.continual_batch_size}, pos={self.target_positive_ratio:.1%}, hard={self.hard_mining_ratio:.1%}")
-        print(f"  🕐 타임스탬프: {timestamp}")
 
     def _resume_from_latest_checkpoint(self):
-        """최신 체크포인트에서 복원 (배치 구성 정보 포함)"""
+        """최신 체크포인트에서 복원"""
         checkpoint_files = list(self.checkpoint_dir.glob('checkpoint_step_*.pth'))
         
         if not checkpoint_files:
@@ -695,13 +661,6 @@ class CoconutSystem:
         
         try:
             checkpoint = torch.load(latest_checkpoint, map_location=self.device)
-            
-            # 🔥 배치 구성 정보 복원
-            if 'continual_batch_size' in checkpoint:
-                print(f"[Resume] 🎯 Restoring batch composition config:")
-                print(f"   Continual batch size: {checkpoint.get('continual_batch_size', self.continual_batch_size)}")
-                print(f"   Target positive ratio: {checkpoint.get('target_positive_ratio', self.target_positive_ratio):.1%}")
-                print(f"   Hard mining ratio: {checkpoint.get('hard_mining_ratio', self.hard_mining_ratio):.1%}")
             
             # Headless 모드에 맞는 state_dict 필터링
             learner_state_dict = checkpoint['learner_state_dict']
@@ -732,9 +691,6 @@ class CoconutSystem:
             self.simple_stats = checkpoint.get('simple_stats', self.simple_stats)
             
             print(f"[Resume] ✅ Successfully resumed from step {self.learner_step_count}")
-            print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
-            print(f"   Dataset position: {self.global_dataset_index}")
-            print(f"   Batch size: {self.continual_batch_size}")
         
         except Exception as e:
             print(f"[Resume] ❌ Failed to resume: {e}")
@@ -742,4 +698,4 @@ class CoconutSystem:
             self.learner_step_count = 0
             self.global_dataset_index = 0
 
-print("✅ CoconutSystem with Controlled Batch Composition 완료!")
+print("✅ CoconutSystem Improved Version 완료!")
