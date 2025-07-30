@@ -57,16 +57,27 @@ def main():
     
     # 평가용 데이터셋 로딩 로직 개선
     try:
+        # 🔥 수정된 부분 시작
         # Stage 1 데이터가 있는 경우 (사전훈련 데이터 사용)
         if hasattr(config.dataset, 'train_set_file') and config.dataset.train_set_file:
-            print(f"Using pretrain dataset: {config.dataset.train_set_file}")
-            train_dataset = MyDataset(txt=config.dataset.train_set_file, train=False)
-            test_dataset = MyDataset(txt=config.dataset.train_set_file, train=False)
+            train_file = config.dataset.train_set_file
+            test_file = getattr(config.dataset, 'test_set_file', train_file)  # 테스트 파일이 있으면 사용
+            print(f"Using pretrain dataset - Train: {train_file}, Test: {test_file}")
         else:
             # Stage 2 데이터만 있는 경우 (온라인 적응 데이터 재사용)
-            print(f"Using adaptation dataset: {config.dataset.dataset_path}")
-            train_dataset = MyDataset(txt=str(config.dataset.dataset_path), train=False)
-            test_dataset = MyDataset(txt=str(config.dataset.dataset_path), train=False)
+            train_file = str(config.dataset.dataset_path)
+            test_file = str(getattr(config.dataset, 'test_dataset_path', config.dataset.dataset_path))  # 🔥 새로 추가된 테스트 경로 사용
+            print(f"Using adaptation dataset - Train: {train_file}, Test: {test_file}")
+        
+        # 🔥 train/test 분할 확인
+        if train_file == test_file:
+            print("⚠️ WARNING: Using same file for train and test (overfitted evaluation)")
+        else:
+            print("✅ Using separate train and test files (proper evaluation)")
+        
+        train_dataset = MyDataset(txt=train_file, train=False)
+        test_dataset = MyDataset(txt=test_file, train=False)
+        # 🔥 수정된 부분 끝
         
         train_loader_eval = DataLoader(train_dataset, batch_size=128, shuffle=False)
         test_loader_eval = DataLoader(test_dataset, batch_size=128, shuffle=False)

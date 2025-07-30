@@ -1,11 +1,11 @@
-# framework/replay_buffer.py - learned 파라미터 제거한 단순화 버전
+# framework/replay_buffer.py - learned 파라미터 호환성 추가 버전
 
 """
-CoCoNut Intelligent Replay Buffer with Simplified Smart Storage Logic
+CoCoNut Intelligent Replay Buffer with Fixed Smart Storage Logic
 
-🔥 SIMPLIFIED FEATURES:
+🔥 FIXED FEATURES:
 - 첫 샘플만 무조건 저장, 나머지는 다양성 기반
-- learned 파라미터 제거로 단순화
+- learned 파라미터 호환성 추가 (backward compatibility)
 - 제어된 배치 구성 (positive/hard/regular 비율)
 - Faiss 기반 유사도 계산 및 다양성 확보
 - 하드 마이닝 지원
@@ -35,7 +35,7 @@ from PIL import Image
 class CoconutReplayBuffer:
     def __init__(self, config, storage_dir: Path, feature_dimension: int = 128):
         """
-        지능형 리플레이 버퍼 초기화 (단순화된 스마트 저장 로직)
+        지능형 리플레이 버퍼 초기화 (learned 파라미터 호환성 추가)
         """
         self.config = config
         self.storage_dir = storage_dir
@@ -76,27 +76,33 @@ class CoconutReplayBuffer:
         self.state_file = self.storage_dir / 'buffer_state.pkl'
         self._load_state()
 
-        print(f"[Buffer] 🥥 CoCoNut Simplified Replay Buffer initialized")
+        print(f"[Buffer] 🥥 CoCoNut Fixed Replay Buffer initialized")
         print(f"[Buffer] Strategy: {self.sampling_strategy}")
         print(f"[Buffer] Max buffer size: {self.buffer_size}")
         print(f"[Buffer] Similarity threshold: {self.similarity_threshold}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
 
-    def smart_add(self, image: torch.Tensor, user_id: int):
+    def smart_add(self, image: torch.Tensor, user_id: int, learned: bool = False):
         """
-        🔥 SIMPLIFIED: 단순하고 명확한 스마트 버퍼 저장
+        🔥 FIXED: learned 파라미터 호환성 추가한 스마트 버퍼 저장
         
         단순한 로직:
         - 첫 번째 샘플만 무조건 저장 (긍정쌍 학습 기반 마련)
         - 두 번째 샘플부터는 항상 다양성 기반 판단
+        - learned 파라미터는 향후 확장을 위해 유지하지만 현재는 사용하지 않음
         
         Args:
             image: 저장할 이미지
             user_id: 사용자 ID
+            learned: 학습 여부 (호환성을 위해 추가, 현재는 사용하지 않음)
             
         Returns:
             str: 저장 결정 이유
         """
+        
+        # learned 파라미터 로깅 (디버그용)
+        if learned:
+            print(f"[Buffer] 📖 Learning occurred before storage for User {user_id}")
         
         existing_user_samples = [item for item in self.image_storage 
                                if item['user_id'] == user_id]
@@ -123,11 +129,15 @@ class CoconutReplayBuffer:
             
             if max_similarity < threshold:
                 reason = "diversity_sufficient"
+                if learned:
+                    reason += "_after_learning"
                 self._force_store(image, user_id, reason)
                 print(f"[Buffer] ✅ Stored: diversity sufficient ({max_similarity:.3f} < {threshold:.3f})")
                 return reason
             else:
                 reason = f"too_similar_{max_similarity:.3f}"
+                if learned:
+                    reason += "_despite_learning"
                 print(f"[Buffer] ❌ Skipped: too similar ({max_similarity:.3f} >= {threshold:.3f})")
                 return reason
                 
@@ -135,6 +145,8 @@ class CoconutReplayBuffer:
             print(f"[Buffer] ⚠️ Similarity computation failed: {e}")
             # 유사도 계산 실패시 보수적으로 저장 (안전장치)
             reason = "similarity_check_failed_store_anyway"
+            if learned:
+                reason += "_after_learning"
             self._force_store(image, user_id, reason)
             return reason
 
@@ -333,6 +345,9 @@ class CoconutReplayBuffer:
         
         return features
 
+    # [나머지 메서드들은 기존과 동일하므로 생략...]
+    # add(), sample_with_controlled_composition(), sample_with_replacement() 등은 기존 코드와 동일
+
     def add(self, image: torch.Tensor, user_id: int):
         """새로운 경험을 버퍼에 추가 (기존 방식 - 호환성 유지)"""
         
@@ -382,92 +397,30 @@ class CoconutReplayBuffer:
         else:
             print(f"[Buffer] ⚠️ Similar sample skipped (similarity: {max_similarity:.4f} >= {self.similarity_threshold})")
 
-    def _compute_pytorch_similarity(self, new_embedding):
-        """Faiss 없을 때 PyTorch로 유사도 계산"""
-        if len(self.stored_embeddings) == 0:
-            return 0.0
+    def sample_with_replacement(self, batch_size: int, new_embedding: torch.Tensor = None, 
+                              current_user_id: int = None) -> Tuple[List, List]:
+        """
+        리플레이 샘플링 - 다양한 전략 지원
         
-        new_emb = torch.tensor(new_embedding).flatten()
-        max_sim = 0.0
+        Args:
+            batch_size: 배치 크기
+            new_embedding: 현재 샘플 임베딩 (하드 마이닝용)
+            current_user_id: 현재 사용자 ID
+            
+        Returns:
+            Tuple[List, List]: (sampled_images, sampled_labels)
+        """
+        if len(self.image_storage) == 0:
+            return [], []
         
-        for stored_emb in self.stored_embeddings:
-            stored_tensor = torch.tensor(stored_emb).flatten()
-            # 코사인 유사도 계산
-            similarity = torch.cosine_similarity(new_emb.unsqueeze(0), stored_tensor.unsqueeze(0)).item()
-            max_sim = max(max_sim, similarity)
-        
-        return max_sim
-
-    def _cull(self):
-        """가장 중복되는 데이터 제거 (기존 방식)"""
-        if len(self.stored_embeddings) < 2:
-            return
-
-        print(f"[Buffer] 🔄 Buffer full. Finding most redundant sample...")
-        
-        if FAISS_AVAILABLE and self.faiss_index is not None and self.faiss_index.ntotal >= 2:
-            all_vectors = np.vstack(self.stored_embeddings)
-            k = min(self.faiss_index.ntotal, 50)
-            similarities, _ = self.faiss_index.search(all_vectors, k=k)
-            diversity_scores = similarities.sum(axis=1) - 1.0
-            cull_idx_in_storage = np.argmax(diversity_scores)
+        # 샘플링 전략에 따라 다른 방법 사용
+        if self.sampling_strategy == "controlled":
+            return self.sample_with_controlled_composition(batch_size, new_embedding, current_user_id)
+        elif self.sampling_strategy == "balanced":
+            return self._sample_balanced(batch_size)
         else:
-            # PyTorch 기반 다양성 계산
-            cull_idx_in_storage = self._find_most_redundant_pytorch()
-        
-        cull_unique_id = self.image_storage[cull_idx_in_storage]['id']
-
-        # Faiss 인덱스에서 제거
-        if FAISS_AVAILABLE and self.faiss_index is not None:
-            try:
-                self.faiss_index.remove_ids(np.array([cull_unique_id]))
-            except Exception:
-                self._rebuild_faiss_index_after_removal(cull_idx_in_storage)
-        
-        # 메타데이터 정리
-        if cull_unique_id in self.metadata:
-            del self.metadata[cull_unique_id]
-        
-        del self.image_storage[cull_idx_in_storage]
-        del self.stored_embeddings[cull_idx_in_storage]
-        
-        print(f"[Buffer] 🗑️ Removed redundant sample (ID: {cull_unique_id})")
-
-    def _find_most_redundant_pytorch(self):
-        """PyTorch로 가장 중복되는 샘플 찾기"""
-        max_similarity = -1
-        most_redundant_idx = 0
-        
-        for i, emb1 in enumerate(self.stored_embeddings):
-            total_similarity = 0
-            tensor1 = torch.tensor(emb1).flatten()
-            
-            for j, emb2 in enumerate(self.stored_embeddings):
-                if i != j:
-                    tensor2 = torch.tensor(emb2).flatten()
-                    sim = torch.cosine_similarity(tensor1.unsqueeze(0), tensor2.unsqueeze(0)).item()
-                    total_similarity += sim
-            
-            if total_similarity > max_similarity:
-                max_similarity = total_similarity
-                most_redundant_idx = i
-        
-        return most_redundant_idx
-
-    def _rebuild_faiss_index_after_removal(self, removed_idx):
-        """Faiss 인덱스 재구축"""
-        if not FAISS_AVAILABLE:
-            return
-            
-        print("[Buffer] 🔧 Rebuilding Faiss index...")
-        self._initialize_faiss()
-        
-        for i, (item, embedding) in enumerate(zip(self.image_storage, self.stored_embeddings)):
-            if i != removed_idx and self.faiss_index is not None:
-                self.faiss_index.add_with_ids(
-                    embedding.reshape(1, -1), 
-                    np.array([item['id']])
-                )
+            # 기본 랜덤 샘플링
+            return self._sample_random(batch_size)
 
     def sample_with_controlled_composition(self, batch_size: int, new_embedding: torch.Tensor = None, 
                                          current_user_id: int = None) -> Tuple[List, List]:
@@ -613,31 +566,6 @@ class CoconutReplayBuffer:
         
         return sampled_images, sampled_labels
 
-    def sample_with_replacement(self, batch_size: int, new_embedding: torch.Tensor = None, 
-                              current_user_id: int = None) -> Tuple[List, List]:
-        """
-        리플레이 샘플링 - 다양한 전략 지원
-        
-        Args:
-            batch_size: 배치 크기
-            new_embedding: 현재 샘플 임베딩 (하드 마이닝용)
-            current_user_id: 현재 사용자 ID
-            
-        Returns:
-            Tuple[List, List]: (sampled_images, sampled_labels)
-        """
-        if len(self.image_storage) == 0:
-            return [], []
-        
-        # 샘플링 전략에 따라 다른 방법 사용
-        if self.sampling_strategy == "controlled":
-            return self.sample_with_controlled_composition(batch_size, new_embedding, current_user_id)
-        elif self.sampling_strategy == "balanced":
-            return self._sample_balanced(batch_size)
-        else:
-            # 기본 랜덤 샘플링
-            return self._sample_random(batch_size)
-
     def _sample_balanced(self, batch_size: int) -> Tuple[List, List]:
         """사용자 균형 샘플링"""
         if len(self.image_storage) == 0:
@@ -699,6 +627,93 @@ class CoconutReplayBuffer:
             sampled_labels.append(item['user_id'])
         
         return sampled_images, sampled_labels
+
+    def _compute_pytorch_similarity(self, new_embedding):
+        """Faiss 없을 때 PyTorch로 유사도 계산"""
+        if len(self.stored_embeddings) == 0:
+            return 0.0
+        
+        new_emb = torch.tensor(new_embedding).flatten()
+        max_sim = 0.0
+        
+        for stored_emb in self.stored_embeddings:
+            stored_tensor = torch.tensor(stored_emb).flatten()
+            # 코사인 유사도 계산
+            similarity = torch.cosine_similarity(new_emb.unsqueeze(0), stored_tensor.unsqueeze(0)).item()
+            max_sim = max(max_sim, similarity)
+        
+        return max_sim
+
+    def _cull(self):
+        """가장 중복되는 데이터 제거 (기존 방식)"""
+        if len(self.stored_embeddings) < 2:
+            return
+
+        print(f"[Buffer] 🔄 Buffer full. Finding most redundant sample...")
+        
+        if FAISS_AVAILABLE and self.faiss_index is not None and self.faiss_index.ntotal >= 2:
+            all_vectors = np.vstack(self.stored_embeddings)
+            k = min(self.faiss_index.ntotal, 50)
+            similarities, _ = self.faiss_index.search(all_vectors, k=k)
+            diversity_scores = similarities.sum(axis=1) - 1.0
+            cull_idx_in_storage = np.argmax(diversity_scores)
+        else:
+            # PyTorch 기반 다양성 계산
+            cull_idx_in_storage = self._find_most_redundant_pytorch()
+        
+        cull_unique_id = self.image_storage[cull_idx_in_storage]['id']
+
+        # Faiss 인덱스에서 제거
+        if FAISS_AVAILABLE and self.faiss_index is not None:
+            try:
+                self.faiss_index.remove_ids(np.array([cull_unique_id]))
+            except Exception:
+                self._rebuild_faiss_index_after_removal(cull_idx_in_storage)
+        
+        # 메타데이터 정리
+        if cull_unique_id in self.metadata:
+            del self.metadata[cull_unique_id]
+        
+        del self.image_storage[cull_idx_in_storage]
+        del self.stored_embeddings[cull_idx_in_storage]
+        
+        print(f"[Buffer] 🗑️ Removed redundant sample (ID: {cull_unique_id})")
+
+    def _find_most_redundant_pytorch(self):
+        """PyTorch로 가장 중복되는 샘플 찾기"""
+        max_similarity = -1
+        most_redundant_idx = 0
+        
+        for i, emb1 in enumerate(self.stored_embeddings):
+            total_similarity = 0
+            tensor1 = torch.tensor(emb1).flatten()
+            
+            for j, emb2 in enumerate(self.stored_embeddings):
+                if i != j:
+                    tensor2 = torch.tensor(emb2).flatten()
+                    sim = torch.cosine_similarity(tensor1.unsqueeze(0), tensor2.unsqueeze(0)).item()
+                    total_similarity += sim
+            
+            if total_similarity > max_similarity:
+                max_similarity = total_similarity
+                most_redundant_idx = i
+        
+        return most_redundant_idx
+
+    def _rebuild_faiss_index_after_removal(self, removed_idx):
+        """Faiss 인덱스 재구축"""
+        if not FAISS_AVAILABLE:
+            return
+            
+        print("[Buffer] 🔧 Rebuilding Faiss index...")
+        self._initialize_faiss()
+        
+        for i, (item, embedding) in enumerate(zip(self.image_storage, self.stored_embeddings)):
+            if i != removed_idx and self.faiss_index is not None:
+                self.faiss_index.add_with_ids(
+                    embedding.reshape(1, -1), 
+                    np.array([item['id']])
+                )
 
     def _setup_augmentation_transforms(self):
         """데이터 증강 변환 설정 (보수적 손금 전용)"""
@@ -863,7 +878,7 @@ class CoconutReplayBuffer:
         print(f"\n📊 [Buffer Summary]")
         print(f"   Total samples: {stats['total_samples']}/{self.buffer_size}")
         print(f"   Unique users: {stats['unique_users']}")
-        print(f"   Utilization: {stats['buffer_utilizㅁation']:.1%}")
+        print(f"   Utilization: {stats['buffer_utilization']:.1%}")
         print(f"   Avg samples/user: {stats['avg_samples_per_user']:.1f}")
         
         if stats['storage_reasons']:
@@ -871,4 +886,4 @@ class CoconutReplayBuffer:
             for reason, count in stats['storage_reasons'].items():
                 print(f"     {reason}: {count}")
 
-print("✅ learned 파라미터 완전 제거한 단순화된 CoconutReplayBuffer 완성!")
+print("✅ learned 파라미터 호환성이 추가된 CoconutReplayBuffer 완성!")

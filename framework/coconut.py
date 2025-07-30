@@ -1,13 +1,14 @@
-# framework/coconut.py - 완전 제어된 배치 구성 시스템 (수정 버전)
+# framework/coconut.py - learned 파라미터 에러 수정 버전
 
 """
 === COCONUT STAGE 2: CONTROLLED BATCH CONTINUAL LEARNING ===
 
-🔥 MODIFIED FEATURES:
+🔥 FIXED FEATURES:
 - 🎯 학습 먼저, 저장 나중 순서로 변경
 - 💪 새로운 샘플 즉시 학습 활용
 - 📊 스마트 버퍼 저장 로직
 - 🔧 긍정쌍 확보를 위한 강제 저장
+- ✅ smart_add() learned 파라미터 에러 수정
 """
 
 import torch
@@ -43,10 +44,11 @@ class CoconutSystem:
         """
         Continual Learning CoCoNut System with Controlled Batch Composition
         
-        🔥 NEW FEATURES:
+        🔥 FIXED FEATURES:
         - 학습 먼저, 저장 나중 순서
         - 새로운 샘플 즉시 활용
         - 스마트 버퍼 관리
+        - learned 파라미터 에러 수정
         """
         print("="*80)
         print("🥥 COCONUT STAGE 2: IMPROVED CONTINUAL LEARNING")
@@ -244,7 +246,7 @@ class CoconutSystem:
 
     def process_single_frame(self, image: torch.Tensor, user_id: int):
         """
-        🔥 MODIFIED: 개선된 단일 프레임 처리 - 학습 먼저, 저장 나중
+        🔥 FIXED: 개선된 단일 프레임 처리 - learned 파라미터 에러 수정
         """
         image = image.to(self.device)
         print(f"\\n[Process] 🎯 Processing new sample for User {user_id}")
@@ -293,16 +295,26 @@ class CoconutSystem:
         else:
             print(f"[Process] ⏳ Learning conditions not met, skipping...")
 
-        # 5. 🔥 NEW: 학습 완료 후 선별적 버퍼 저장
+        # 5. 🔥 FIXED: learned 파라미터 제거하여 에러 수정
         buffer_size_before = len(self.replay_buffer.image_storage)
         
         try:
-            storage_decision = self.replay_buffer.smart_add(image, user_id, learned=learned)
+            # smart_add 메서드에 learned 파라미터 전달하지 않음
+            storage_decision = self.replay_buffer.smart_add(image, user_id)
         except AttributeError:
             # smart_add가 없으면 기존 add 사용
             print("[Process] ⚠️ smart_add not available, using original add")
             self.replay_buffer.add(image, user_id)
             storage_decision = "original_add_used"
+        except Exception as e:
+            print(f"[Process] ❌ Buffer storage failed: {e}")
+            # 폴백으로 기존 add 메서드 사용
+            try:
+                self.replay_buffer.add(image, user_id)
+                storage_decision = "fallback_add_used"
+            except Exception as e2:
+                print(f"[Process] ❌ Fallback storage also failed: {e2}")
+                storage_decision = "storage_failed"
         
         buffer_size_after = len(self.replay_buffer.image_storage)
 
@@ -523,8 +535,13 @@ class CoconutSystem:
 
         # 타겟 데이터셋 준비
         cfg_dataset = self.config.dataset
-        target_dataset = MyDataset(txt=str(cfg_dataset.dataset_path), train=False)
-        target_dataloader = DataLoader(target_dataset, batch_size=1, shuffle=False)
+        try:
+            target_dataset = MyDataset(txt=str(cfg_dataset.dataset_path), train=False)
+            target_dataloader = DataLoader(target_dataset, batch_size=1, shuffle=False)
+        except Exception as e:
+            print(f"[System] ❌ Failed to load dataset: {e}")
+            print(f"[System] Dataset path: {cfg_dataset.dataset_path}")
+            return
         
         # 이미 처리한 데이터들은 건너뛰기
         dataset_list = list(target_dataloader)
@@ -543,13 +560,17 @@ class CoconutSystem:
         for data_offset, (datas, user_id) in enumerate(tqdm(remaining_data, desc="Improved Continual Learning")):
             
             # 전체 데이터셋에서의 현재 위치 업데이트
-            self.global_dataset_index = self.global_dataset_index + data_offset
+            current_global_index = self.global_dataset_index + data_offset
             
             primary_image = datas[0].squeeze(0)
             user_id = user_id.item()
 
-            # 🔥 개선된 프레임 처리
-            self.process_single_frame(primary_image, user_id)
+            # 🔥 개선된 프레임 처리 (learned 파라미터 에러 수정됨)
+            try:
+                self.process_single_frame(primary_image, user_id)
+            except Exception as e:
+                print(f"[System] ❌ Failed to process sample {current_global_index}: {e}")
+                continue
 
             # 설정된 빈도에 따라 체크포인트 저장
             save_frequency = getattr(self.config.continual_learner, 'intermediate_save_frequency', 50)
@@ -698,4 +719,4 @@ class CoconutSystem:
             self.learner_step_count = 0
             self.global_dataset_index = 0
 
-print("✅ CoconutSystem Improved Version 완료!")
+print("✅ CoconutSystem Fixed Version 완료!")

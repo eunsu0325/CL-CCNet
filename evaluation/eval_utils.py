@@ -57,13 +57,51 @@ def calculate_scores(probe_features, gallery_features):
     return distances
 
 def calculate_eer(genuine_scores, imposter_scores):
-    """정규 매칭 점수와 비정규 매칭 점수를 바탕으로 EER을 계산합니다."""
+    """정규 매칭 점수와 비정규 매칭 점수를 바탕으로 EER을 계산합니다. (음수 점수 지원)"""
+    
+    # 🔥 음수 점수 처리: 전체 점수를 양수로 shift
+    all_scores = np.concatenate([genuine_scores, imposter_scores])
+    min_score = np.min(all_scores)
+    
+    if min_score < 0:
+        print(f"[EER] 음수 점수 감지: {min_score:.6f}, 양수로 shift 적용")
+        genuine_scores = genuine_scores - min_score
+        imposter_scores = imposter_scores - min_score
+        print(f"[EER] Shift 후 범위: [{np.min(all_scores - min_score):.6f}, {np.max(all_scores - min_score):.6f}]")
+    
+    # 🔥 점수 통계 출력
+    print(f"[EER Stats] Genuine: count={len(genuine_scores)}, min={np.min(genuine_scores):.4f}, max={np.max(genuine_scores):.4f}, mean={np.mean(genuine_scores):.4f}")
+    print(f"[EER Stats] Imposter: count={len(imposter_scores)}, min={np.min(imposter_scores):.4f}, max={np.max(imposter_scores):.4f}, mean={np.mean(imposter_scores):.4f}")
+    
+    # 라벨 생성
     labels = np.concatenate([np.ones_like(genuine_scores), np.zeros_like(imposter_scores)])
     scores = np.concatenate([genuine_scores, imposter_scores])
 
-    fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
-    eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
-    thresh = interp1d(fpr, thresholds)(-eer)
+    try:
+        # 🔥 원래 방식: -scores 사용 (거리가 아닌 유사도로 변환)
+        fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+        
+        # EER 계산 시도
+        eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+        thresh = interp1d(fpr, thresholds)(-eer)
+        
+        print(f"[EER] 성공적으로 계산됨: {eer*100:.4f}% at threshold {thresh:.6f}")
+        
+    except Exception as e:
+        print(f"[EER] 보간 계산 실패: {e}")
+        print("[EER] 대안 방법 사용...")
+        
+        # 🔥 대안: 직접 EER 지점 찾기
+        fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+        fnr = 1 - tpr
+        
+        # FPR과 FNR이 가장 가까운 지점 찾기
+        diff = np.abs(fpr - fnr)
+        eer_idx = np.argmin(diff)
+        eer = (fpr[eer_idx] + fnr[eer_idx]) / 2
+        thresh = thresholds[eer_idx]
+        
+        print(f"[EER] 대안 계산 결과: {eer*100:.4f}% at threshold {thresh:.6f}")
 
     return eer * 100, thresh
 
