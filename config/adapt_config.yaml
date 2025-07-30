@@ -20,7 +20,7 @@ Dataset:
   height: 128
   width: 128
   use_angle_normalization: false
-  dataset_path: "./data/test_tongji.txt"
+  dataset_path: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
 
 # =================================================================
 # MODEL CONFIGURATION (CCNet with Headless Option)
@@ -32,7 +32,7 @@ PalmRecognizer:
   feature_dimension: 2048
   learning_rate: 0.001
   batch_size: 1024
-  load_weights_folder: "./results/checkpoint/net_params_best.pth"
+  load_weights_folder: "/content/drive/MyDrive/net_params1.pth"
   
   # 🔥 Headless Configuration (중복 제거, 올바른 값만)
   headless_mode: true
@@ -110,7 +110,7 @@ Loss:
 # MODEL SAVING CONFIGURATION
 # =================================================================
 ModelSaving:
-  final_save_path: "/content/drive/MyDrive/CoCoNut_STAR"
+  final_save_path: "/content/drive/MyDrive/CoCoNut_TEST"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true
