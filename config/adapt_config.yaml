@@ -1,14 +1,14 @@
-# config/adapt_config.yaml - 배치 기반 설정
+# config/adapt_config.yaml - User Node 통합 버전
 
 # =================================================================
-# DESIGN PHILOSOPHY (Batch-based Control)
+# DESIGN PHILOSOPHY (User Node Based Control)
 # =================================================================
 Design_Documentation:
-  philosophy: "Batch-based Continual Learning for Palmprint Recognition"
-  core_innovation: "Process samples in batches with automatic positive pairs"
-  main_contribution: "Efficient GPU utilization with simplified control flow"
-  loss_strategy: "SupCon with guaranteed positive pairs from batch"
-  buffer_strategy: "Diversity-based storage with per-user limits"
+  philosophy: "User Node based Continual Learning for Palmprint Recognition"
+  core_innovation: "Mahalanobis distance authentication with loop closure"
+  main_contribution: "Self-correcting open-set palmprint recognition"
+  loss_strategy: "SupCon + Mahalanobis with alternating training"
+  node_strategy: "Diagonal covariance for efficiency, Full for training"
 
 # =================================================================
 # DATASET CONFIGURATION
@@ -43,11 +43,11 @@ PalmRecognizer:
   compression_dim: 128
 
 # =================================================================
-# CONTINUAL LEARNER CONFIGURATION (SIMPLIFIED)
+# CONTINUAL LEARNER CONFIGURATION
 # =================================================================
 ContinualLearner:
   adaptation: true
-  adaptation_epochs: 1  # Per batch
+  adaptation_epochs: 3  # Per batch
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
@@ -59,7 +59,7 @@ ContinualLearner:
   hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
 
 # =================================================================
-# REPLAY BUFFER CONFIGURATION (SIMPLIFIED)
+# REPLAY BUFFER CONFIGURATION
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
@@ -75,17 +75,47 @@ ReplayBuffer:
   samples_per_user_limit: 3  # Maximum samples per user in buffer
 
 # =================================================================
+# 🔥 USER NODE CONFIGURATION
+# =================================================================
+UserNode:
+  enable_user_nodes: true  # User node system ON/OFF
+  node_save_path: "./results/user_nodes/"
+  collision_threshold: 0.5  # Loop closure trigger threshold
+  use_faiss_index: true  # Faiss index for fast search
+  max_samples_per_user: 10  # Max samples for node creation
+  
+  # PQ compression settings (future implementation)
+  enable_compression: false
+  pq_nbits: 8
+  pq_nsegments: 32
+
+# =================================================================
+# 🔥 LOOP CLOSURE CONFIGURATION  
+# =================================================================
+LoopClosure:
+  enabled: true  # Loop closure ON/OFF (auto OFF if UserNode is OFF)
+  retraining_epochs: 5  # Epochs for collision resolution
+  priority_weight: 2.0  # Weight for collision samples
+  
+# =================================================================
 # LOSS CONFIGURATION
 # =================================================================
 Loss:
   temp: 0.07
   type: "SupConLoss"
+  
+  # 🔥 Online learning weights
+  online_learning:
+    enable_mahalanobis: true  # Mahalanobis loss ON/OFF
+    supcon_weight: 1.0       # SupConLoss weight
+    mahal_weight: 0.2        # Mahalanobis weight (smaller)
+    alternate_training: true  # Alternate SupCon ↔ Mahal
 
 # =================================================================
 # MODEL SAVING CONFIGURATION
 # =================================================================
 ModelSaving:
-  final_save_path: "/content/drive/MyDrive/CoCoNut_BatchMode"
+  final_save_path: "/content/drive/MyDrive/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true

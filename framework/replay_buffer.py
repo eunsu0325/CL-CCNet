@@ -1,20 +1,20 @@
-# framework/replay_buffer.py - 배치 기반 단순화 버전
+# framework/replay_buffer.py - Loop Closure 지원 추가 버전
 
 """
-CoCoNut Simplified Replay Buffer
+CoCoNut Simplified Replay Buffer with Loop Closure Support
 
-🔥 CHANGES:
-- Removed all positive pair forcing logic
-- Simplified batch composition
-- Optimized for batch processing
-- Added per-user sample limit
+🔥 NEW FEATURES:
+- Priority queue for loop closure samples
+- User-specific sample retrieval
+- Enhanced sampling strategies
+- PQ compression preparation
 """
 
 import os
 import pickle
 import random
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Set
 
 try:
     import faiss
@@ -33,7 +33,7 @@ from PIL import Image
 
 class SimplifiedReplayBuffer:
     def __init__(self, config, storage_dir: Path, feature_dimension: int = 128):
-        """단순화된 리플레이 버퍼"""
+        """단순화된 리플레이 버퍼 with Loop Closure support"""
         self.config = config
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -52,8 +52,12 @@ class SimplifiedReplayBuffer:
         self.feature_extractor = None
         self.device = 'cpu'
         
-        # 하드 네거티브 비율 (CoconutSystem에서 설정)
+        # 하드 네거티브 비율
         self.hard_negative_ratio = 0.3
+        
+        # 🔥 Loop Closure Priority Queue
+        self.priority_queue = []  # 우선순위 샘플들
+        self.priority_users = set()  # 우선순위 사용자 ID들
         
         # 데이터 증강 설정
         self.enable_augmentation = False
@@ -64,14 +68,15 @@ class SimplifiedReplayBuffer:
         self.state_file = self.storage_dir / 'buffer_state.pkl'
         self._load_state()
         
-        print(f"[Buffer] 🥥 Simplified Replay Buffer initialized")
+        print(f"[Buffer] 🥥 Enhanced Replay Buffer initialized")
         print(f"[Buffer] Max size: {self.buffer_size}")
         print(f"[Buffer] Per-user limit: {self.samples_per_user_limit}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
+        print(f"[Buffer] 🔥 Loop Closure support: ENABLED")
 
     def add_if_diverse(self, image: torch.Tensor, user_id: int, embedding: torch.Tensor = None):
         """
-        다양성 기반 추가 (단순화)
+        다양성 기반 추가 (기존과 동일)
         
         Args:
             image: 이미지
@@ -109,7 +114,7 @@ class SimplifiedReplayBuffer:
     def sample_for_training(self, num_samples: int, current_embeddings: List[torch.Tensor], 
                           current_user_id: int) -> Tuple[List, List]:
         """
-        학습을 위한 샘플링 (단순화)
+        학습을 위한 샘플링 - 🔥 Loop Closure 우선순위 지원
         
         Args:
             num_samples: 필요한 샘플 수
@@ -122,42 +127,115 @@ class SimplifiedReplayBuffer:
         if len(self.image_storage) == 0:
             return [], []
         
-        # 하드 네거티브 수 계산
-        num_hard = int(num_samples * self.hard_negative_ratio)
-        num_random = num_samples - num_hard
-        
         sampled_images = []
         sampled_labels = []
         used_indices = set()
         
-        # 1. 하드 네거티브 마이닝
+        # 🔥 1. Priority Queue 처리 (Loop Closure)
+        if self.priority_queue:
+            print(f"[Buffer] Processing {len(self.priority_queue)} priority samples")
+            
+            for priority_item in self.priority_queue[:num_samples]:
+                sampled_images.append(priority_item['image'])
+                sampled_labels.append(priority_item['user_id'])
+                
+            # 사용한 것들은 제거
+            self.priority_queue = self.priority_queue[len(sampled_images):]
+            
+            if len(sampled_images) >= num_samples:
+                return sampled_images[:num_samples], sampled_labels[:num_samples]
+        
+        # 2. 하드 네거티브 마이닝
+        remaining_samples = num_samples - len(sampled_images)
+        num_hard = int(remaining_samples * self.hard_negative_ratio)
+        
         if num_hard > 0 and current_embeddings:
             hard_samples = self._mine_hard_negatives_batch(
                 current_embeddings, current_user_id, num_hard
             )
             
             for item in hard_samples:
-                sampled_images.append(item['image'])
-                sampled_labels.append(item['user_id'])
-                used_indices.add(self.image_storage.index(item))
+                if len(sampled_images) < num_samples:
+                    sampled_images.append(item['image'])
+                    sampled_labels.append(item['user_id'])
+                    idx = self.image_storage.index(item)
+                    used_indices.add(idx)
         
-        # 2. 랜덤 샘플링
-        available_indices = [i for i in range(len(self.image_storage)) 
-                           if i not in used_indices]
-        
-        if available_indices and num_random > 0:
-            random_indices = random.choices(available_indices, k=min(num_random, len(available_indices)))
+        # 3. 랜덤 샘플링
+        remaining_samples = num_samples - len(sampled_images)
+        if remaining_samples > 0:
+            available_indices = [i for i in range(len(self.image_storage)) 
+                               if i not in used_indices]
             
-            for idx in random_indices:
-                item = self.image_storage[idx]
-                sampled_images.append(item['image'])
-                sampled_labels.append(item['user_id'])
+            if available_indices:
+                random_indices = random.choices(available_indices, 
+                                              k=min(remaining_samples, len(available_indices)))
+                
+                for idx in random_indices:
+                    if len(sampled_images) < num_samples:
+                        item = self.image_storage[idx]
+                        sampled_images.append(item['image'])
+                        sampled_labels.append(item['user_id'])
         
         print(f"[Buffer] Sampled {len(sampled_images)} samples: "
-              f"{len(hard_samples) if num_hard > 0 else 0} hard, "
-              f"{len(sampled_images) - (len(hard_samples) if num_hard > 0 else 0)} random")
+              f"{len(self.priority_queue)} priority, "
+              f"{num_hard} hard, "
+              f"{len(sampled_images) - len(self.priority_queue) - num_hard} random")
         
         return sampled_images, sampled_labels
+
+    def add_priority_samples(self, user_ids: List[int], priority_weight: float = 2.0):
+        """
+        🔥 Loop Closure용 우선순위 샘플 추가
+        
+        Args:
+            user_ids: 우선순위로 추가할 사용자 ID들
+            priority_weight: 우선순위 가중치
+        """
+        print(f"[Buffer] Adding priority samples for users: {user_ids}")
+        
+        for user_id in user_ids:
+            user_samples = self.get_user_samples(user_id)
+            
+            for sample_dict in user_samples:
+                # 우선순위 큐에 추가
+                priority_item = sample_dict.copy()
+                priority_item['priority_weight'] = priority_weight
+                self.priority_queue.append(priority_item)
+            
+            self.priority_users.add(user_id)
+            print(f"[Buffer] Added {len(user_samples)} priority samples for user {user_id}")
+        
+        # 우선순위 큐 정렬 (가중치 높은 것부터)
+        self.priority_queue.sort(key=lambda x: x.get('priority_weight', 1.0), reverse=True)
+
+    def get_user_samples(self, user_id: int) -> List[Dict]:
+        """
+        🔥 특정 사용자의 모든 샘플 반환
+        
+        Returns:
+            List of sample dictionaries
+        """
+        user_samples = []
+        for item in self.image_storage:
+            if item['user_id'] == user_id:
+                user_samples.append(item)
+        return user_samples
+
+    def get_user_sample_images(self, user_id: int) -> List[torch.Tensor]:
+        """
+        🔥 특정 사용자의 이미지만 반환 (Loop Closure용)
+        
+        Returns:
+            List of image tensors
+        """
+        return [item['image'] for item in self.image_storage if item['user_id'] == user_id]
+
+    def clear_priority_queue(self):
+        """🔥 우선순위 큐 초기화"""
+        self.priority_queue = []
+        self.priority_users.clear()
+        print("[Buffer] Priority queue cleared")
 
     def _mine_hard_negatives_batch(self, query_embeddings: List[torch.Tensor], 
                                   exclude_user: int, num_samples: int) -> List[Dict]:
@@ -228,7 +306,8 @@ class SimplifiedReplayBuffer:
         self.image_storage.append({
             'image': image.cpu().clone(),
             'user_id': user_id,
-            'id': unique_id
+            'id': unique_id,
+            'timestamp': len(self.image_storage)  # 추가 순서
         })
         
         # 임베딩 저장
@@ -245,13 +324,16 @@ class SimplifiedReplayBuffer:
             self.faiss_index.add_with_ids(embedding_np.reshape(1, -1), np.array([unique_id]))
         
         # 메타데이터
-        self.metadata[unique_id] = {'user_id': user_id}
+        self.metadata[unique_id] = {
+            'user_id': user_id,
+            'priority': user_id in self.priority_users
+        }
         
         print(f"[Buffer] Stored sample {unique_id} for user {user_id}. "
               f"Buffer: {len(self.image_storage)}/{self.buffer_size}")
 
     def _remove_least_diverse(self):
-        """가장 중복되는 샘플 제거"""
+        """가장 중복되는 샘플 제거 - 🔥 우선순위 샘플 보호"""
         if len(self.image_storage) < 2:
             return
         
@@ -259,6 +341,11 @@ class SimplifiedReplayBuffer:
         diversity_scores = []
         
         for i in range(len(self.image_storage)):
+            # 우선순위 샘플은 보호
+            if self.image_storage[i]['user_id'] in self.priority_users:
+                diversity_scores.append(-1.0)  # 낮은 점수로 보호
+                continue
+                
             if FAISS_AVAILABLE and self.faiss_index:
                 query = self.stored_embeddings[i].reshape(1, -1)
                 similarities, _ = self.faiss_index.search(query, min(10, len(self.image_storage)))
@@ -269,7 +356,16 @@ class SimplifiedReplayBuffer:
             diversity_scores.append(avg_similarity)
         
         # 가장 유사도가 높은 (다양성이 낮은) 샘플 제거
-        remove_idx = np.argmax(diversity_scores)
+        valid_indices = [i for i, score in enumerate(diversity_scores) if score >= 0]
+        if not valid_indices:
+            # 모든 샘플이 보호됨 - 가장 오래된 비우선순위 샘플 제거
+            for i in range(len(self.image_storage)):
+                if self.image_storage[i]['user_id'] not in self.priority_users:
+                    remove_idx = i
+                    break
+        else:
+            remove_idx = max(valid_indices, key=lambda i: diversity_scores[i])
+        
         removed_item = self.image_storage[remove_idx]
         
         # 제거
@@ -336,7 +432,7 @@ class SimplifiedReplayBuffer:
         self.augmentation_transforms = None
 
     def get_statistics(self) -> Dict:
-        """버퍼 통계"""
+        """버퍼 통계 - 🔥 Loop Closure 정보 추가"""
         user_distribution = {}
         for item in self.image_storage:
             user_id = item['user_id']
@@ -347,25 +443,30 @@ class SimplifiedReplayBuffer:
             'unique_users': len(user_distribution),
             'user_distribution': user_distribution,
             'buffer_utilization': len(self.image_storage) / self.buffer_size,
-            'avg_samples_per_user': len(self.image_storage) / len(user_distribution) if user_distribution else 0
+            'avg_samples_per_user': len(self.image_storage) / len(user_distribution) if user_distribution else 0,
+            'priority_queue_size': len(self.priority_queue),
+            'priority_users': list(self.priority_users)
         }
 
     def _save_state(self):
-        """상태 저장"""
+        """상태 저장 - 🔥 우선순위 정보 포함"""
         save_data = {
             'image_storage': self.image_storage,
             'stored_embeddings': self.stored_embeddings,
             'metadata': self.metadata,
-            'feature_dim': self.feature_dimension
+            'feature_dim': self.feature_dimension,
+            'priority_queue': self.priority_queue,
+            'priority_users': list(self.priority_users)
         }
         
         with open(self.state_file, 'wb') as f:
             pickle.dump(save_data, f)
         
-        print(f"[Buffer] State saved: {len(self.image_storage)} samples")
+        print(f"[Buffer] State saved: {len(self.image_storage)} samples, "
+              f"{len(self.priority_queue)} priority items")
 
     def _load_state(self):
-        """상태 로드"""
+        """상태 로드 - 🔥 우선순위 정보 포함"""
         if not self.state_file.exists():
             return
         
@@ -376,11 +477,14 @@ class SimplifiedReplayBuffer:
             self.image_storage = save_data.get('image_storage', [])
             self.stored_embeddings = save_data.get('stored_embeddings', [])
             self.metadata = save_data.get('metadata', {})
+            self.priority_queue = save_data.get('priority_queue', [])
+            self.priority_users = set(save_data.get('priority_users', []))
             
             if self.image_storage:
                 self._rebuild_faiss_index()
             
-            print(f"[Buffer] State loaded: {len(self.image_storage)} samples")
+            print(f"[Buffer] State loaded: {len(self.image_storage)} samples, "
+                  f"{len(self.priority_queue)} priority items")
         except Exception as e:
             print(f"[Buffer] Failed to load state: {e}")
 

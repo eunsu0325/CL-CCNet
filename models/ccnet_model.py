@@ -588,7 +588,66 @@ def create_stable_ccnet_from_config(config):
     print(f"   Stability: GroupNorm, Input validation, NaN protection")
     
     return model
+# models/ccnet_model.py에 추가할 내용
 
+class UserNodeVerifier(StableHeadlessVerifier):
+    """
+    🔥 User Node 기반 Mahalanobis 검증기
+    
+    Features:
+    - Diagonal Mahalanobis distance
+    - Multi-user verification
+    - Confidence scoring
+    """
+    
+    def __init__(self, node_manager, threshold=0.5):
+        super().__init__(metric_type="mahalanobis", threshold=threshold)
+        self.node_manager = node_manager
+        
+    def verify_with_nodes(self, probe_features: torch.Tensor, top_k: int = 5):
+        """User Node 기반 검증"""
+        
+        if not self.node_manager or not self.node_manager.is_enabled():
+            return {
+                'is_match': False,
+                'matched_user': None,
+                'confidence': 0.0,
+                'reason': 'User node system disabled'
+            }
+        
+        # 가장 가까운 k명 찾기
+        nearest_users = self.node_manager.find_nearest_users(probe_features, k=top_k)
+        
+        if not nearest_users:
+            return {
+                'is_match': False,
+                'matched_user': None,
+                'confidence': 0.0,
+                'reason': 'No registered users'
+            }
+        
+        # 최근접 사용자
+        best_user_id, best_distance = nearest_users[0]
+        
+        # 인증 판정
+        is_match = best_distance < self.threshold
+        
+        # 신뢰도 계산
+        if is_match:
+            # 거리 기반 신뢰도 (0~1)
+            confidence = max(0.0, 1.0 - (best_distance / self.threshold))
+        else:
+            confidence = 0.0
+        
+        return {
+            'is_match': is_match,
+            'matched_user': best_user_id if is_match else None,
+            'distance': best_distance,
+            'confidence': confidence,
+            'top_k_results': nearest_users,
+            'threshold': self.threshold
+        }
+    
 # 🎯 호환성을 위한 별칭
 HeadlessVerifier = StableHeadlessVerifier
 ProjectionHead = StableProjectionHead

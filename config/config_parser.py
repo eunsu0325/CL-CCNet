@@ -1,4 +1,4 @@
-# config/config_parser.py - 타입 변환 에러 수정
+# config/config_parser.py - User Node 지원 추가
 """
 COCONUT Configuration Parser
 
@@ -6,8 +6,7 @@ DESIGN PHILOSOPHY:
 - Unified configuration management for both stages
 - Automatic type validation and conversion
 - Clear separation between pretrain and adaptation configs
-- 🔥 ModelSaving configuration support
-- 🔥 DataAugmentation configuration support
+- 🔥 UserNode and LoopClosure configuration support
 """
 
 import dataclasses
@@ -21,7 +20,8 @@ import yaml
 from datasets.config import DatasetConfig
 from framework.config import (
     ContinualLearnerConfig, ReplayBufferConfig, LossConfig, 
-    TrainingConfig, PathsConfig, ModelSavingConfig, DataAugmentationConfig
+    TrainingConfig, PathsConfig, ModelSavingConfig, DataAugmentationConfig,
+    UserNodeConfig, LoopClosureConfig  # 🔥 NEW
 )
 from models.config import PalmRecognizerConfig
 
@@ -34,8 +34,7 @@ class ConfigParser():
     - Supports both pretrain and adaptation configurations
     - Automatic type validation and conversion
     - Extensible design for new configuration types
-    - 🔥 ModelSaving configuration support
-    - 🔥 DataAugmentation configuration support
+    - 🔥 UserNode and LoopClosure configuration support
     """
     
     def __init__(self, config_file: Union[str, PathLike, Path]) -> None:
@@ -50,6 +49,8 @@ class ConfigParser():
         self.loss = None
         self.model_saving = None
         self.data_augmentation = None
+        self.user_node = None  # 🔥 NEW
+        self.loop_closure = None  # 🔥 NEW
         
         # 사전 훈련 전용 설정
         self.training = None
@@ -77,9 +78,6 @@ class ConfigParser():
         
         with open(self.filename, 'r', encoding='utf-8') as file:
             self.config_dict = yaml.safe_load(file)
-
-        # YAML 리스트를 튜플로 변환하지 않고 그대로 유지
-        # (List 타입 필드들이 있기 때문)
 
         # 데이터 타입 검증 및 자동 변환
         for config_type_key, config_type in self.config_dict.items():
@@ -173,6 +171,17 @@ class ConfigParser():
                 self.data_augmentation = DataAugmentationConfig(**self.config_dict['DataAugmentation'])
             else:
                 self.data_augmentation = None
+            
+            # 🔥 NEW: User Node and Loop Closure
+            if 'UserNode' in self.config_dict:
+                self.user_node = UserNodeConfig(**self.config_dict['UserNode'])
+            else:
+                self.user_node = None
+                
+            if 'LoopClosure' in self.config_dict:
+                self.loop_closure = LoopClosureConfig(**self.config_dict['LoopClosure'])
+            else:
+                self.loop_closure = None
                 
             # 사전 훈련 전용 설정
             if 'Training' in self.config_dict:
@@ -200,10 +209,14 @@ class ConfigParser():
             string += f'----- ModelSaving --- START -----\n{self.model_saving}\n----- ModelSaving --- END -------\n'
         if self.data_augmentation:
             string += f'----- DataAugmentation --- START -----\n{self.data_augmentation}\n----- DataAugmentation --- END -------\n'
+        if self.user_node:  # 🔥 NEW
+            string += f'----- UserNode --- START -----\n{self.user_node}\n----- UserNode --- END -------\n'
+        if self.loop_closure:  # 🔥 NEW
+            string += f'----- LoopClosure --- START -----\n{self.loop_closure}\n----- LoopClosure --- END -------\n'
         if self.training:
             string += f'----- Training --- START -----\n{self.training}\n----- Training --- END -------\n'
         if self.paths:
             string += f'----- Paths --- START -----\n{self.paths}\n----- Paths --- END -------\n'
         return string
 
-print("✅ config_parser.py 타입 변환 에러 수정 완료!")
+print("✅ config_parser.py User Node 지원 추가 완료!")
