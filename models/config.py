@@ -1,4 +1,4 @@
-# models/config.py - 모델 설정 (파일명 수정)
+# models/config.py - 모델 설정
 """
 COCONUT Model Configuration
 
@@ -25,8 +25,8 @@ class PalmRecognizerConfig:
     batch_size: Optional[int] = 1024
     # 온라인 적응용  
     load_weights_folder: Optional[str] = None
-    #1
-      # 🔥 NEW: Headless Configuration
+    
+    # 🔥 NEW: Headless Configuration
     headless_mode: Optional[bool] = False  # true: 헤드 제거, false: 헤드 유지
     verification_method: Optional[str] = "classification"  # "classification" or "metric"
     metric_type: Optional[str] = "cosine"  # "cosine" or "l2"
