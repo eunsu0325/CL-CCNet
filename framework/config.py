@@ -1,23 +1,21 @@
-# framework/config.py - 배치 구성 제어 완전 버전
+# framework/config.py - 배치 기반 재설계 버전
 
 """
-CoCoNut Framework Configuration Classes
+CoCoNut Framework Configuration Classes (Batch-based Redesign)
 
 DESIGN PHILOSOPHY:
-- Controlled batch composition for optimal continual learning
-- Separate batch sizes for pretraining vs continual learning
-- Precise positive/hard sample ratios
-- Extensible sampling strategies
+- Batch processing for efficiency
+- Simple hard negative mining
+- No forced positive pair logic (automatic with batch)
 """
 
 import dataclasses
 from pathlib import Path
 from typing import Optional, List
 
-# === 연속학습 실험용 설정들 ===
 @dataclasses.dataclass
 class ContinualLearnerConfig:
-    """연속 학습기 설정 (🔥 배치 구성 제어 추가)"""
+    """연속 학습기 설정 (배치 기반 단순화)"""
     config_file: Path
     adaptation: bool
     adaptation_epochs: int
@@ -29,67 +27,22 @@ class ContinualLearnerConfig:
     intermediate_save_frequency: Optional[int] = 100
     learning_rate: Optional[float] = 0.001
     
-    # 🔥 NEW: 연속학습 전용 배치 사이즈 (PalmRecognizer와 분리)
-    continual_batch_size: Optional[int] = 10     # 연속학습 배치 사이즈
-    batch_size: Optional[int] = None             # 호환성 유지 (deprecated)
-    
-    # 🔥 NEW: 배치 구성 비율 제어
-    target_positive_ratio: Optional[float] = 0.3      # 30% positive pairs
-    hard_mining_ratio: Optional[float] = 0.3          # 30% hard samples  
-    enable_hard_mining: Optional[bool] = True         # Hard mining 활성화
-    
-    # 호환성 유지
-    hard_mining_ratio_legacy: Optional[float] = None  # 기존 이름 지원
+    # 🔥 NEW: 단순화된 배치 설정
+    training_batch_size: Optional[int] = 32      # 전체 학습 배치 크기
+    hard_negative_ratio: Optional[float] = 0.3   # 하드 네거티브 비율만
     
     def __post_init__(self):
-        """설정 검증 및 호환성 처리"""
-        # 1. 호환성 처리: batch_size → continual_batch_size
-        if self.batch_size is not None and self.continual_batch_size == 10:
-            self.continual_batch_size = self.batch_size
-            print(f"[Config] Using legacy batch_size: {self.continual_batch_size}")
+        """설정 검증"""
+        if not (0.0 <= self.hard_negative_ratio <= 1.0):
+            raise ValueError(f"hard_negative_ratio must be 0.0-1.0, got {self.hard_negative_ratio}")
         
-        # 2. 호환성 처리: hard_mining_ratio_legacy
-        if self.hard_mining_ratio_legacy is not None:
-            self.hard_mining_ratio = self.hard_mining_ratio_legacy
-            print(f"[Config] Using legacy hard_mining_ratio: {self.hard_mining_ratio}")
-        
-        # 3. 비율 검증
-        if not (0.0 <= self.target_positive_ratio <= 1.0):
-            raise ValueError(f"target_positive_ratio must be 0.0-1.0, got {self.target_positive_ratio}")
-        
-        if not (0.0 <= self.hard_mining_ratio <= 1.0):
-            raise ValueError(f"hard_mining_ratio must be 0.0-1.0, got {self.hard_mining_ratio}")
-        
-        # 4. 배치 구성 검증
-        # Positive pairs는 2개씩이므로, 실제 positive sample 수는 ratio * 2
-        max_positive_samples = self.target_positive_ratio * self.continual_batch_size
-        max_hard_samples = self.hard_mining_ratio * self.continual_batch_size
-        total_reserved = max_positive_samples + max_hard_samples
-        
-        if total_reserved > self.continual_batch_size:
-            print(f"[Config] Warning: positive + hard samples ({total_reserved:.1f}) > batch_size ({self.continual_batch_size})")
-            print(f"[Config] Some overlap may occur, adjusting ratios...")
-            
-            # 자동 조정
-            adjustment_factor = self.continual_batch_size / total_reserved * 0.9
-            self.target_positive_ratio *= adjustment_factor
-            self.hard_mining_ratio *= adjustment_factor
-            
-            print(f"[Config] Adjusted ratios: positive={self.target_positive_ratio:.2f}, hard={self.hard_mining_ratio:.2f}")
-        
-        # 5. 최종 계획 출력
-        planned_positive = int(self.continual_batch_size * self.target_positive_ratio)
-        planned_hard = int(self.continual_batch_size * self.hard_mining_ratio)
-        planned_regular = self.continual_batch_size - planned_positive - planned_hard
-        
-        print(f"[Config] 🎯 Continual Learning Batch Plan (size: {self.continual_batch_size}):")
-        print(f"   Positive samples: {planned_positive} ({self.target_positive_ratio:.1%})")
-        print(f"   Hard samples: {planned_hard} ({self.hard_mining_ratio:.1%})")
-        print(f"   Regular samples: {planned_regular} ({planned_regular/self.continual_batch_size:.1%})")
+        print(f"[Config] 🎯 Batch-based Continual Learning:")
+        print(f"   Training batch size: {self.training_batch_size}")
+        print(f"   Hard negative ratio: {self.hard_negative_ratio:.1%}")
 
 @dataclasses.dataclass
 class ReplayBufferConfig:
-    """지능형 리플레이 버퍼 설정 (🔥 샘플링 전략 제어 추가)"""
+    """리플레이 버퍼 설정 (단순화)"""
     config_file: Path
     maximize_diversity: bool
     max_buffer_size: int
@@ -102,30 +55,18 @@ class ReplayBufferConfig:
     diversity_update_frequency: Optional[int] = 10
     model_save_path: Optional[str] = "./results/models/"
     
-    # 🔥 NEW: 샘플링 전략 제어
-    sampling_strategy: Optional[str] = "controlled"    # "controlled", "balanced", "original"
-    force_positive_pairs: Optional[bool] = True        # 항상 positive pairs 보장
-    min_positive_pairs: Optional[int] = 1              # 최소 positive pair 수  
-    max_positive_ratio: Optional[float] = 0.5          # 최대 positive ratio 제한
+    # 🔥 NEW: 단순화된 설정
+    samples_per_user_limit: Optional[int] = 3    # 사용자당 최대 저장 수
     
     def __post_init__(self):
-        """샘플링 전략 검증"""
-        valid_strategies = ["controlled", "balanced", "original"]
-        if self.sampling_strategy not in valid_strategies:
-            raise ValueError(f"sampling_strategy must be one of {valid_strategies}, got {self.sampling_strategy}")
-        
-        if not (0.0 <= self.max_positive_ratio <= 1.0):
-            raise ValueError(f"max_positive_ratio must be 0.0-1.0, got {self.max_positive_ratio}")
-        
-        print(f"[Config] 🎯 Replay Buffer Sampling:")
-        print(f"   Strategy: {self.sampling_strategy}")
-        print(f"   Force positive pairs: {self.force_positive_pairs}")
-        print(f"   Min positive pairs: {self.min_positive_pairs}")
-        print(f"   Max positive ratio: {self.max_positive_ratio:.1%}")
+        print(f"[Config] 🎯 Simplified Replay Buffer:")
+        print(f"   Max buffer size: {self.max_buffer_size}")
+        print(f"   Samples per user limit: {self.samples_per_user_limit}")
+        print(f"   Diversity threshold: {self.similarity_threshold}")
 
 @dataclasses.dataclass  
 class LossConfig:
-    """손실 함수 설정 (기존과 동일)"""
+    """손실 함수 설정 (변경 없음)"""
     config_file: Path
     temp: float
     type: Optional[str] = "SupConLoss"
@@ -135,7 +76,7 @@ class LossConfig:
 
 @dataclasses.dataclass
 class ModelSavingConfig:
-    """모델 저장 설정 (기존과 동일)"""
+    """모델 저장 설정 (변경 없음)"""
     config_file: Path
     final_save_path: str = "/content/drive/MyDrive/CoCoNut_STAR"
     intermediate_save_frequency: int = 100
@@ -145,7 +86,7 @@ class ModelSavingConfig:
 
 @dataclasses.dataclass
 class DataAugmentationConfig:
-    """데이터 증강 설정 (기존과 동일)"""
+    """데이터 증강 설정 (변경 없음)"""
     config_file: Path
     enable_augmentation: bool = True
     augmentation_probability: float = 0.4
@@ -162,7 +103,6 @@ class DataAugmentationConfig:
     noise_std_range: Optional[List] = None
     
     def __post_init__(self):
-        """기본값 설정"""
         if self.intermediate_resolutions is None:
             self.intermediate_resolutions = [[64, 64], [96, 96], [160, 160]]
         if self.resize_methods is None:
@@ -170,7 +110,7 @@ class DataAugmentationConfig:
         if self.noise_std_range is None:
             self.noise_std_range = [0.01, 0.03]
 
-# === 사전 훈련용 설정들 (기존과 동일) ===
+# === 사전 훈련용 설정들 (변경 없음) ===
 @dataclasses.dataclass
 class TrainingConfig:
     """사전 훈련용 Training 설정"""

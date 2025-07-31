@@ -1,16 +1,14 @@
-# config/adapt_config.yaml - 배치 구성 제어 완전 버전
+# config/adapt_config.yaml - 배치 기반 설정
 
 # =================================================================
-# DESIGN PHILOSOPHY (Headless 옵션 + 배치 구성 제어)
+# DESIGN PHILOSOPHY (Batch-based Control)
 # =================================================================
 Design_Documentation:
-  philosophy: "Intelligent Replay Buffer for Continual Palmprint Recognition"
-  core_innovation: "Controlled batch composition with precise ratios"
-  main_contribution: "Memory-efficient continual learning with optimal positive/hard ratios"
-  loss_strategy: "Basic SupCon for stable continual learning"
-  buffer_strategy: "Faiss-optimized diversity + controlled sampling"
-  scientific_basis: "Proven SupCon + Novel controlled batch composition"
-  headless_capability: "Optional head removal for open-set verification"
+  philosophy: "Batch-based Continual Learning for Palmprint Recognition"
+  core_innovation: "Process samples in batches with automatic positive pairs"
+  main_contribution: "Efficient GPU utilization with simplified control flow"
+  loss_strategy: "SupCon with guaranteed positive pairs from batch"
+  buffer_strategy: "Diversity-based storage with per-user limits"
 
 # =================================================================
 # DATASET CONFIGURATION
@@ -21,9 +19,12 @@ Dataset:
   width: 128
   use_angle_normalization: false
   dataset_path: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
+  
+  # 🔥 BATCH PROCESSING
+  samples_per_label: 5  # Process 5 samples per user at once
 
 # =================================================================
-# MODEL CONFIGURATION (CCNet with Headless Option)
+# MODEL CONFIGURATION
 # =================================================================
 PalmRecognizer:
   architecture: "CCNet"
@@ -31,10 +32,10 @@ PalmRecognizer:
   com_weight: 0.8
   feature_dimension: 2048
   learning_rate: 0.001
-  batch_size: 1024
+  batch_size: 1024  # For compatibility
   load_weights_folder: "/content/drive/MyDrive/net_params1.pth"
   
-  # 🔥 Headless Configuration (중복 제거, 올바른 값만)
+  # Headless Configuration
   headless_mode: true
   verification_method: "metric"
   metric_type: "cosine"
@@ -42,60 +43,36 @@ PalmRecognizer:
   compression_dim: 128
 
 # =================================================================
-# CONTINUAL LEARNER CONFIGURATION
+# CONTINUAL LEARNER CONFIGURATION (SIMPLIFIED)
 # =================================================================
 ContinualLearner:
   adaptation: true
-  adaptation_epochs: 2
+  adaptation_epochs: 1  # Per batch
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
   learning_rate: 0.001
   
-  continual_batch_size: 10
-  target_positive_ratio: 0.3
-  hard_mining_ratio: 0.3
-  enable_hard_mining: true
-  hard_mining_ratio_legacy: 0.3
+  # 🔥 BATCH CONFIGURATION
+  training_batch_size: 32  # Total batch size for training
+  hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
 
 # =================================================================
-# REPLAY BUFFER CONFIGURATION
+# REPLAY BUFFER CONFIGURATION (SIMPLIFIED)
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
-  max_buffer_size: 50
+  max_buffer_size: 200  # Increased for better diversity
   similarity_threshold: 0.85
   storage_path: "./results/replay_buffer/"
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
   diversity_update_frequency: 10
   model_save_path: "./results/models/"
-  sampling_strategy: "controlled"
-  force_positive_pairs: true
-  min_positive_pairs: 1
-  max_positive_ratio: 0.5
-
-# =================================================================
-# DATA AUGMENTATION
-# =================================================================
-DataAugmentation:
-  enable_augmentation: true
-  augmentation_probability: 0.4
-  enable_geometric: true
-  geometric_probability: 0.3
-  max_rotation_degrees: 3
-  max_translation_ratio: 0.05
-  enable_resolution_adaptation: true
-  resolution_probability: 0.3
-  intermediate_resolutions:
-    - [64, 64]
-    - [96, 96]
-    - [160, 160]
-  resize_methods: ["nearest", "bilinear", "bicubic", "lanczos"]
-  enable_noise: true
-  noise_probability: 0.3
-  noise_std_range: [0.01, 0.03]
+  
+  # 🔥 SIMPLIFIED CONFIGURATION
+  samples_per_user_limit: 3  # Maximum samples per user in buffer
 
 # =================================================================
 # LOSS CONFIGURATION
@@ -103,15 +80,24 @@ DataAugmentation:
 Loss:
   temp: 0.07
   type: "SupConLoss"
-  weight1: 0.8
-  weight2: 0.2
 
 # =================================================================
 # MODEL SAVING CONFIGURATION
 # =================================================================
 ModelSaving:
-  final_save_path: "/content/drive/MyDrive/CoCoNut_TEST"
+  final_save_path: "/content/drive/MyDrive/CoCoNut_BatchMode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true
   auto_generate_readme: true
+
+# =================================================================
+# DATA AUGMENTATION (OPTIONAL)
+# =================================================================
+DataAugmentation:
+  enable_augmentation: false  # Disabled for consistency
+  augmentation_probability: 0.4
+  enable_geometric: true
+  geometric_probability: 0.3
+  max_rotation_degrees: 3
+  max_translation_ratio: 0.05
