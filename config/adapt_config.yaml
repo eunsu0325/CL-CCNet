@@ -8,9 +8,9 @@ dataset:
   width: 128
   use_angle_normalization: false
   samples_per_label: 10
-  train_set_file: null
-  test_set_file: null
-  dataset_path: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
+  train_set_file: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
+  test_set_file:  "/content/drive/MyDrive/CCNet_OKD_CD/data/test_Tongji.txt"
+  dataset_path: null
 
 # Model Configuration
 palm_recognizer:
@@ -42,12 +42,12 @@ continual_learner:
 replay_buffer:
   maximize_diversity: true
   max_buffer_size: 200
-  similarity_threshold: 0.85
-  storage_path: "/content/drive/MyDrive/CL-CCNet/results/replay_buffer/"  # 구글 드라이브로 변경
+  similarity_threshold: 0.95
+  storage_path: "/content/drive/MyDrive/CL-CCNet_usermode/results/replay_buffer/"  # 구글 드라이브로 변경
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
   diversity_update_frequency: 10
-  model_save_path: "/content/CL-CCNet/results/models"
+  model_save_path: "/content/drive/MyDrive/CL-CCNet_usermoderesults/models"
   samples_per_user_limit: 3
   min_samples_new_user: 2  # 새 사용자는 2장 저장
   use_faiss: true
@@ -63,7 +63,7 @@ loss:
 
 # Model Saving Configuration
 model_saving:
-  final_save_path: "/content/drive/MyDrive/CoCoNut_UserNode"
+  final_save_path: "/content/drive/MyDrive/CL-CCNet_usermode/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true
@@ -80,8 +80,8 @@ data_augmentation:
 # User Node Configuration
 user_node:
   enable_user_nodes: true
-  node_save_path: "/content/drive/MyDrive/CL-CCNet/results/user_nodes"
-  collision_threshold: 0.3  # 각도 거리 기준 (0~1)
+  node_save_path: "/content/drive/MyDrive/CL-CCNet_usermode/results/user_nodes"
+  collision_threshold: 0.25  # 각도 거리 기준 (0~1)
   use_faiss_index: true
   max_images_per_user: 3  # 사용자당 최대 저장 이미지
   max_samples_per_user: 10  # 사용자당 최대 임베딩 수
@@ -101,4 +101,4 @@ experiment:
   num_workers: 4
   save_frequency: 50
   log_frequency: 10
-  checkpoint_path: "/content/drive/MyDrive/CoCoNut_BatchMode/checkpoints"
+  checkpoint_path: "/content/drive/MyDrive/CL-CCNet_usermode/CoCoNut_BatchMode/checkpoints"
