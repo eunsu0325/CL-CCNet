@@ -1,16 +1,27 @@
-# COCONUT Batch Mode Configuration
-# 마할라노비스 제거, User Node 시스템 개선
+# config/adapt_config.yaml - User Node 통합 버전
 
-# Dataset Configuration
-dataset:
+# =================================================================
+# DESIGN PHILOSOPHY (User Node Based Control)
+# =================================================================
+Design_Documentation:
+  philosophy: "User Node based Continual Learning for Palmprint Recognition"
+  core_innovation: "Mahalanobis distance authentication with loop closure"
+  main_contribution: "Self-correcting open-set palmprint recognition"
+  loss_strategy: "SupCon + Mahalanobis with alternating training"
+  node_strategy: "Diagonal covariance for efficiency, Full for training"
+
+# =================================================================
+# DATASET CONFIGURATION
+# =================================================================
+Dataset:
   type: "palmprint"
   height: 128
   width: 128
   use_angle_normalization: false
   samples_per_label: 10
-  train_set_file: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
-  test_set_file:  "/content/drive/MyDrive/CCNet_OKD_CD/data/test_Tongji.txt"
-  dataset_path: null
+  train_set_file: null
+  test_set_file: null
+  dataset_path: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
 
 # Model Configuration
 palm_recognizer:
@@ -19,35 +30,44 @@ palm_recognizer:
   com_weight: 0.8
   feature_dimension: 2048
   learning_rate: 0.001
-  batch_size: 1024
+  batch_size: 1024  # For compatibility
   load_weights_folder: "/content/drive/MyDrive/net_params1.pth"
+  
+  # Headless Configuration
   headless_mode: true
   verification_method: "metric"
   metric_type: "cosine"
-  similarity_threshold: 0.3  # 각도 거리 기준으로 조정
+  similarity_threshold: 0.5
+  compression_dim: 128
 
-# Continual Learning Configuration
-continual_learner:
+# =================================================================
+# CONTINUAL LEARNER CONFIGURATION
+# =================================================================
+ContinualLearner:
   adaptation: true
-  adaptation_epochs: 3
+  adaptation_epochs: 3  # Per batch
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
   learning_rate: 0.001
-  training_batch_size: 32
-  hard_negative_ratio: 0.3
+  
+  # 🔥 BATCH CONFIGURATION
+  training_batch_size: 32  # Total batch size for training
+  hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
 
-# Replay Buffer Configuration
-replay_buffer:
+# =================================================================
+# REPLAY BUFFER CONFIGURATION
+# =================================================================
+ReplayBuffer:
   maximize_diversity: true
   max_buffer_size: 200
-  similarity_threshold: 0.95
-  storage_path: "/content/drive/MyDrive/CL-CCNet_usermode/results/replay_buffer/"  # 구글 드라이브로 변경
+  similarity_threshold: 0.85
+  storage_path: "/content/drive/MyDrive/CL-CCNet/results/replay_buffer/"  # 구글 드라이브로 변경
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
   diversity_update_frequency: 10
-  model_save_path: "/content/drive/MyDrive/CL-CCNet_usermoderesults/models"
+  model_save_path: "/content/CL-CCNet/results/models"
   samples_per_user_limit: 3
   min_samples_new_user: 2  # 새 사용자는 2장 저장
   use_faiss: true
@@ -55,7 +75,9 @@ replay_buffer:
 # Loss Configuration
 loss:
   temp: 0.07
-  type: "CombinedLoss"  # 실제로는 SupConLoss만 사용
+  type: "SupConLoss"
+  
+  # 🔥 Online learning weights
   online_learning:
     enable_mahalanobis: false  # 마할라노비스 비활성화
     supcon_weight: 1.0
@@ -63,15 +85,17 @@ loss:
 
 # Model Saving Configuration
 model_saving:
-  final_save_path: "/content/drive/MyDrive/CL-CCNet_usermode/CoCoNut_UserNode"
+  final_save_path: "/content/drive/MyDrive/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true
   auto_generate_readme: true
 
-# Data Augmentation Configuration (비활성화)
-data_augmentation:
-  enable_augmentation: false
+# =================================================================
+# DATA AUGMENTATION (OPTIONAL)
+# =================================================================
+DataAugmentation:
+  enable_augmentation: false  # Disabled for consistency
   augmentation_probability: 0.4
   enable_geometric: false
   enable_resolution_adaptation: false
@@ -80,8 +104,8 @@ data_augmentation:
 # User Node Configuration
 user_node:
   enable_user_nodes: true
-  node_save_path: "/content/drive/MyDrive/CL-CCNet_usermode/results/user_nodes"
-  collision_threshold: 0.25  # 각도 거리 기준 (0~1)
+  node_save_path: "/content/drive/MyDrive/CL-CCNet/results/user_nodes"
+  collision_threshold: 0.3  # 각도 거리 기준 (0~1)
   use_faiss_index: true
   max_images_per_user: 3  # 사용자당 최대 저장 이미지
   max_samples_per_user: 10  # 사용자당 최대 임베딩 수
@@ -101,4 +125,4 @@ experiment:
   num_workers: 4
   save_frequency: 50
   log_frequency: 10
-  checkpoint_path: "/content/drive/MyDrive/CL-CCNet_usermode/CoCoNut_BatchMode/checkpoints"
+  checkpoint_path: "/content/drive/MyDrive/CoCoNut_BatchMode/checkpoints"
