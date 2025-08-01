@@ -1,133 +1,104 @@
-# config/adapt_config.yaml - User Node 통합 버전
+# COCONUT Batch Mode Configuration
+# 마할라노비스 제거, User Node 시스템 개선
 
-# =================================================================
-# DESIGN PHILOSOPHY (User Node Based Control)
-# =================================================================
-Design_Documentation:
-  philosophy: "User Node based Continual Learning for Palmprint Recognition"
-  core_innovation: "Mahalanobis distance authentication with loop closure"
-  main_contribution: "Self-correcting open-set palmprint recognition"
-  loss_strategy: "SupCon + Mahalanobis with alternating training"
-  node_strategy: "Diagonal covariance for efficiency, Full for training"
-
-# =================================================================
-# DATASET CONFIGURATION
-# =================================================================
-Dataset:
+# Dataset Configuration
+dataset:
   type: "palmprint"
   height: 128
   width: 128
   use_angle_normalization: false
+  samples_per_label: 10
+  train_set_file: null
+  test_set_file: null
   dataset_path: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
-  
-  # 🔥 BATCH PROCESSING
-  samples_per_label: 5  # Process 5 samples per user at once
 
-# =================================================================
-# MODEL CONFIGURATION
-# =================================================================
-PalmRecognizer:
+# Model Configuration
+palm_recognizer:
   architecture: "CCNet"
   num_classes: 600
   com_weight: 0.8
   feature_dimension: 2048
   learning_rate: 0.001
-  batch_size: 1024  # For compatibility
+  batch_size: 1024
   load_weights_folder: "/content/drive/MyDrive/net_params1.pth"
-  
-  # Headless Configuration
   headless_mode: true
   verification_method: "metric"
   metric_type: "cosine"
-  similarity_threshold: 0.5
-  compression_dim: 128
+  similarity_threshold: 0.3  # 각도 거리 기준으로 조정
 
-# =================================================================
-# CONTINUAL LEARNER CONFIGURATION
-# =================================================================
-ContinualLearner:
+# Continual Learning Configuration
+continual_learner:
   adaptation: true
-  adaptation_epochs: 3  # Per batch
+  adaptation_epochs: 3
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
   learning_rate: 0.001
-  
-  # 🔥 BATCH CONFIGURATION
-  training_batch_size: 32  # Total batch size for training
-  hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
+  training_batch_size: 32
+  hard_negative_ratio: 0.3
 
-# =================================================================
-# REPLAY BUFFER CONFIGURATION
-# =================================================================
-ReplayBuffer:
+# Replay Buffer Configuration
+replay_buffer:
   maximize_diversity: true
-  max_buffer_size: 200  # Increased for better diversity
+  max_buffer_size: 200
   similarity_threshold: 0.85
-  storage_path: "./results/replay_buffer/"
+  storage_path: "/content/drive/MyDrive/CL-CCNet/results/replay_buffer/"  # 구글 드라이브로 변경
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
   diversity_update_frequency: 10
-  model_save_path: "./results/models/"
-  
-  # 🔥 SIMPLIFIED CONFIGURATION
-  samples_per_user_limit: 3  # Maximum samples per user in buffer
+  model_save_path: "/content/CL-CCNet/results/models"
+  samples_per_user_limit: 3
+  min_samples_new_user: 2  # 새 사용자는 2장 저장
+  use_faiss: true
 
-# =================================================================
-# 🔥 USER NODE CONFIGURATION
-# =================================================================
-UserNode:
-  enable_user_nodes: true  # User node system ON/OFF
-  node_save_path: "./results/user_nodes/"
-  collision_threshold: 0.5  # Loop closure trigger threshold
-  use_faiss_index: true  # Faiss index for fast search
-  max_samples_per_user: 10  # Max samples for node creation
-  
-  # PQ compression settings (future implementation)
-  enable_compression: false
-  pq_nbits: 8
-  pq_nsegments: 32
-
-# =================================================================
-# 🔥 LOOP CLOSURE CONFIGURATION  
-# =================================================================
-LoopClosure:
-  enabled: true  # Loop closure ON/OFF (auto OFF if UserNode is OFF)
-  retraining_epochs: 5  # Epochs for collision resolution
-  priority_weight: 2.0  # Weight for collision samples
-  
-# =================================================================
-# LOSS CONFIGURATION
-# =================================================================
-Loss:
+# Loss Configuration
+loss:
   temp: 0.07
-  type: "SupConLoss"
-  
-  # 🔥 Online learning weights
+  type: "CombinedLoss"  # 실제로는 SupConLoss만 사용
   online_learning:
-    enable_mahalanobis: true  # Mahalanobis loss ON/OFF
-    supcon_weight: 1.0       # SupConLoss weight
-    mahal_weight: 0.2        # Mahalanobis weight (smaller)
-    alternate_training: true  # Alternate SupCon ↔ Mahal
+    enable_mahalanobis: false  # 마할라노비스 비활성화
+    supcon_weight: 1.0
+    mahal_weight: 0.0  # 사용 안 함
 
-# =================================================================
-# MODEL SAVING CONFIGURATION
-# =================================================================
-ModelSaving:
+# Model Saving Configuration
+model_saving:
   final_save_path: "/content/drive/MyDrive/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
   include_timestamp: true
   auto_generate_readme: true
 
-# =================================================================
-# DATA AUGMENTATION (OPTIONAL)
-# =================================================================
-DataAugmentation:
-  enable_augmentation: false  # Disabled for consistency
+# Data Augmentation Configuration (비활성화)
+data_augmentation:
+  enable_augmentation: false
   augmentation_probability: 0.4
-  enable_geometric: true
-  geometric_probability: 0.3
-  max_rotation_degrees: 3
-  max_translation_ratio: 0.05
+  enable_geometric: false
+  enable_resolution_adaptation: false
+  enable_noise: false
+
+# User Node Configuration
+user_node:
+  enable_user_nodes: true
+  node_save_path: "/content/drive/MyDrive/CL-CCNet/results/user_nodes"
+  collision_threshold: 0.3  # 각도 거리 기준 (0~1)
+  use_faiss_index: true
+  max_images_per_user: 3  # 사용자당 최대 저장 이미지
+  max_samples_per_user: 10  # 사용자당 최대 임베딩 수
+  # PQ 압축 완전 제거
+  enable_compression: false
+
+# Loop Closure Configuration
+loop_closure:
+  enabled: true
+  retraining_epochs: 5
+  priority_weight: 2.0
+
+# Experiment Settings
+experiment:
+  seed: 42
+  device: "cuda"
+  num_workers: 4
+  save_frequency: 50
+  log_frequency: 10
+  checkpoint_path: "/content/drive/MyDrive/CoCoNut_BatchMode/checkpoints"
