@@ -1,8 +1,8 @@
-# framework/user_node.py
+# framework/user_node.py - 정리된 버전
 """
-Simplified User Node System with Faiss for Fast Search
+User Node System with Faiss for Fast Search
 
-사용자별 정보를 저장하고 관리하는 간소화된 노드 시스템
+사용자별 정보를 저장하고 관리하는 노드 시스템
 - 사용자 ID
 - 등록 시 사용한 원본 이미지
 - 평균 임베딩 벡터
@@ -29,9 +29,9 @@ except ImportError:
     FAISS_AVAILABLE = False
     print("[UserNode] ⚠️ Faiss not found - using brute force search")
 
-class SimplifiedUserNode:
+class UserNode:
     """
-    간소화된 사용자 노드
+    사용자 노드
     
     저장 정보:
     - 사용자 ID
@@ -172,13 +172,13 @@ class SimplifiedUserNode:
         return node
     
     def __repr__(self):
-        return (f"SimplifiedUserNode(id={self.user_id}, samples={self.sample_count}, "
+        return (f"UserNode(id={self.user_id}, samples={self.sample_count}, "
                 f"has_image={self.registration_image is not None})")
 
 
-class SimplifiedUserNodeManager:
+class UserNodeManager:
     """
-    간소화된 사용자 노드 매니저 with Faiss
+    사용자 노드 매니저 with Faiss
     
     Features:
     - 사용자 노드 CRUD 작업
@@ -201,7 +201,7 @@ class SimplifiedUserNodeManager:
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
         # 노드 저장소
-        self.nodes: Dict[int, SimplifiedUserNode] = {}
+        self.nodes: Dict[int, UserNode] = {}
         
         # 설정값
         self.similarity_threshold = config.get('similarity_threshold', 0.7)  # 코사인 유사도 임계값
@@ -219,7 +219,7 @@ class SimplifiedUserNodeManager:
         if self.use_faiss and len(self.nodes) > 0:
             self._rebuild_faiss_index()
         
-        print(f"[NodeManager] ✅ Simplified system initialized")
+        print(f"[NodeManager] ✅ System initialized")
         print(f"[NodeManager] Loaded {len(self.nodes)} users")
         print(f"[NodeManager] Similarity threshold: {self.similarity_threshold}")
         print(f"[NodeManager] Faiss index: {'ENABLED' if self.use_faiss else 'DISABLED'}")
@@ -272,7 +272,7 @@ class SimplifiedUserNodeManager:
         self.user_id_map.append(user_id)
     
     def add_user(self, user_id: int, embeddings: torch.Tensor, 
-                 registration_image: np.ndarray = None) -> Optional[SimplifiedUserNode]:
+                 registration_image: np.ndarray = None) -> Optional[UserNode]:
         """새 사용자 추가"""
         # 기존 사용자 확인
         if user_id in self.nodes:
@@ -280,7 +280,7 @@ class SimplifiedUserNodeManager:
             return self.update_user(user_id, embeddings, registration_image)
             
         # 새 노드 생성
-        node = SimplifiedUserNode(user_id, registration_image, embeddings)
+        node = UserNode(user_id, registration_image, embeddings)
         self.nodes[user_id] = node
         
         # Faiss 인덱스에 추가
@@ -294,7 +294,7 @@ class SimplifiedUserNodeManager:
         return node
     
     def update_user(self, user_id: int, embeddings: torch.Tensor, 
-                   registration_image: np.ndarray = None) -> Optional[SimplifiedUserNode]:
+                   registration_image: np.ndarray = None) -> Optional[UserNode]:
         """기존 사용자 업데이트"""
         if user_id not in self.nodes:
             return self.add_user(user_id, embeddings, registration_image)
@@ -435,7 +435,7 @@ class SimplifiedUserNodeManager:
                 
         return None
     
-    def get_node(self, user_id: int) -> Optional[SimplifiedUserNode]:
+    def get_node(self, user_id: int) -> Optional[UserNode]:
         """특정 사용자 노드 반환"""
         return self.nodes.get(user_id)
     
@@ -505,7 +505,7 @@ class SimplifiedUserNodeManager:
         if loaded:
             for uid_str, node_data in data['nodes'].items():
                 uid = int(uid_str)
-                self.nodes[uid] = SimplifiedUserNode.from_dict(node_data, self.device)
+                self.nodes[uid] = UserNode.from_dict(node_data, self.device)
                 
             print(f"[NodeManager] Loaded {len(self.nodes)} nodes")
     
@@ -526,84 +526,5 @@ class SimplifiedUserNodeManager:
             
         return stats
     
-    def benchmark_search_speed(self, num_queries: int = 100):
-        """검색 속도 벤치마크"""
-        if len(self.nodes) < 10:
-            print("[NodeManager] Need at least 10 users for benchmark")
-            return
-            
-        import time
-        
-        # 랜덤 쿼리 생성
-        queries = [torch.randn(self.feature_dim) for _ in range(num_queries)]
-        
-        # Faiss 검색 속도
-        if self.use_faiss:
-            start = time.time()
-            for query in queries:
-                _ = self.find_top_k_faiss(query, k=5)
-            faiss_time = time.time() - start
-            faiss_avg = faiss_time / num_queries * 1000  # ms
-        else:
-            faiss_avg = None
-        
-        # 브루트포스 검색 속도
-        start = time.time()
-        for query in queries:
-            _ = self.find_nearest_users_bruteforce(query, k=5)
-        brute_time = time.time() - start
-        brute_avg = brute_time / num_queries * 1000  # ms
-        
-        print(f"\n[Benchmark] Search speed for {len(self.nodes)} users:")
-        print(f"  Bruteforce: {brute_avg:.2f} ms/query")
-        if faiss_avg:
-            print(f"  Faiss: {faiss_avg:.2f} ms/query")
-            print(f"  Speedup: {brute_avg/faiss_avg:.1f}x")
-        print()
-    
     def __repr__(self):
-        return f"SimplifiedUserNodeManager(users={len(self.nodes)}, faiss={self.use_faiss})"
-
-
-# 테스트 함수
-def test_simplified_system_with_faiss():
-    """Faiss를 포함한 간소화된 시스템 테스트"""
-    print("\n=== Testing Simplified User Node System with Faiss ===")
-    
-    # 테스트 설정
-    config = {
-        'node_save_path': './test_nodes/',
-        'similarity_threshold': 0.7,
-        'use_faiss_index': True,
-        'feature_dimension': 128
-    }
-    
-    # 매니저 생성
-    manager = SimplifiedUserNodeManager(config)
-    
-    # 많은 사용자 추가 (성능 테스트)
-    print("\nAdding 100 test users...")
-    for i in range(100):
-        embeddings = torch.randn(3, 128)  # 3개 샘플씩
-        test_image = np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8)
-        manager.add_user(i, embeddings, test_image)
-    
-    # 인증 테스트
-    print("\nTesting authentication...")
-    test_query = manager.nodes[0].mean_embedding + torch.randn(128) * 0.1  # User 0과 유사한 쿼리
-    result = manager.verify_user(test_query)
-    
-    print(f"Verification result: {result}")
-    
-    # 속도 벤치마크
-    print("\nRunning speed benchmark...")
-    manager.benchmark_search_speed(num_queries=100)
-    
-    # 통계
-    print(f"Statistics: {manager.get_statistics()}")
-    
-    print("=== Test Complete ===\n")
-
-
-if __name__ == "__main__":
-    test_simplified_system_with_faiss()
+        return f"UserNodeManager(users={len(self.nodes)}, faiss={self.use_faiss})"

@@ -1,4 +1,4 @@
-# models/ccnet_model.py - 안정성 개선된 완전판
+# models/ccnet_model.py - 정리된 버전
 
 import torch
 import torch.nn as nn
@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch.nn import Parameter
 import numpy as np
 import math
-import warnings
 
 class GaborConv2d(nn.Module):
     def __init__(self, channel_in, channel_out, kernel_size, stride=1, padding=0, init_ratio=1):
@@ -180,10 +179,10 @@ class ArcMarginProduct(nn.Module):
 
         return output
 
-class StableProjectionHead(nn.Module):
+class ProjectionHead(nn.Module):
     """🔥 안정성 개선된 2048차원 → 128차원 압축 MLP"""
     def __init__(self, input_dim=2048, hidden_dim=512, output_dim=128):
-        super(StableProjectionHead, self).__init__()
+        super(ProjectionHead, self).__init__()
         
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -192,8 +191,7 @@ class StableProjectionHead(nn.Module):
         # 첫 번째 레이어
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         
-        # 🚀 GroupNorm으로 변경 - 배치 크기와 무관하게 안정적!
-        # 그룹 수를 동적으로 계산 (최대 32그룹, 최소 1그룹)
+        # GroupNorm으로 변경 - 배치 크기와 무관하게 안정적
         num_groups = min(32, max(1, hidden_dim // 16))
         self.gn1 = nn.GroupNorm(num_groups=num_groups, num_channels=hidden_dim)
         
@@ -204,10 +202,10 @@ class StableProjectionHead(nn.Module):
         # 두 번째 레이어
         self.fc2 = nn.Linear(hidden_dim, output_dim)
         
-        # 🔥 Xavier 초기화로 안정적 학습
+        # Xavier 초기화로 안정적 학습
         self._initialize_weights()
         
-        print(f"[StableProjectionHead] ✅ Initialized with GroupNorm:")
+        print(f"[ProjectionHead] ✅ Initialized with GroupNorm:")
         print(f"   📏 Dimensions: {input_dim} → {hidden_dim} → {output_dim}")
         print(f"   🔧 GroupNorm: {num_groups} groups for {hidden_dim} channels")
         print(f"   🛡️ Batch-size independent normalization enabled")
@@ -223,18 +221,18 @@ class StableProjectionHead(nn.Module):
         print(f"   ✅ Xavier initialization applied")
     
     def forward(self, x):
-        # 🛡️ 입력 안전성 체크
+        # 입력 안전성 체크
         if x.numel() == 0:
             return torch.zeros(x.size(0), self.output_dim, device=x.device, dtype=x.dtype)
         
         # 첫 번째 변환
         x = self.fc1(x)
         
-        # 🚀 GroupNorm 적용 (배치 크기와 무관!)
+        # GroupNorm 적용 (배치 크기와 무관)
         x = self.gn1(x)
         x = self.relu(x)
         
-        # 🔥 안전한 Dropout 적용
+        # 안전한 Dropout 적용
         if self.training and x.size(0) > 1:  # 배치가 1개보다 클 때만
             x = self.dropout(x)
         
@@ -247,7 +245,7 @@ class StableProjectionHead(nn.Module):
     def get_info(self):
         """압축 헤드 정보 반환"""
         return {
-            'type': 'StableProjectionHead',
+            'type': 'ProjectionHead',
             'input_dim': self.input_dim,
             'hidden_dim': self.hidden_dim,
             'output_dim': self.output_dim,
@@ -283,7 +281,7 @@ class ccnet(torch.nn.Module):
         self.fc1 = torch.nn.Linear(4096, 2048)
         self.drop = torch.nn.Dropout(p=0.5)
         
-        # 🔥 Head configuration with stable components
+        # Head configuration with stable components
         if not headless_mode:
             # Classification mode: ArcFace head
             self.arclayer_ = ArcMarginProduct(2048, num_classes, s=30, m=0.5, easy_margin=False)
@@ -292,12 +290,12 @@ class ccnet(torch.nn.Module):
         else:
             # Headless mode: Stable projection head
             self.arclayer_ = None
-            self.projection_head = StableProjectionHead(input_dim=2048, output_dim=compression_dim)
+            self.projection_head = ProjectionHead(input_dim=2048, output_dim=compression_dim)
             print(f"[CCNet] ✅ Headless mode: {compression_dim}D stable compression")
 
     def forward(self, x, y=None):
         """Forward pass with stability improvements"""
-        # 🛡️ 입력 안전성 체크
+        # 입력 안전성 체크
         if x.numel() == 0:
             batch_size = x.size(0)
             if self.headless_mode:
@@ -317,7 +315,7 @@ class ccnet(torch.nn.Module):
         fe = torch.cat((x1, x), dim=1)  # 6144 dimensional features
         
         if self.headless_mode:
-            # 🚀 Headless: 2048 → compressed features (stable)
+            # Headless: 2048 → compressed features (stable)
             fe_2048 = F.normalize(x, dim=-1, eps=1e-8)
             compressed_features = self.projection_head(fe_2048)
             return None, compressed_features
@@ -334,7 +332,7 @@ class ccnet(torch.nn.Module):
         self.eval()
         
         with torch.no_grad():
-            # 🛡️ 입력 검증
+            # 입력 검증
             if x.numel() == 0:
                 result = torch.zeros(x.size(0), self.compression_dim if self.headless_mode else 2048, device=x.device)
                 if was_training:
@@ -354,7 +352,7 @@ class ccnet(torch.nn.Module):
             x = self.fc(x)
             x = self.fc1(x)
             
-            # 🔥 안전한 정규화
+            # 안전한 정규화
             fe_2048 = F.normalize(x, dim=-1, eps=1e-8)
             
             if self.headless_mode and self.projection_head is not None:
@@ -373,7 +371,7 @@ class ccnet(torch.nn.Module):
         if not self.headless_mode:
             print("[CCNet] 🔄 Converting to headless mode...")
             self.arclayer_ = None
-            self.projection_head = StableProjectionHead(input_dim=2048, output_dim=self.compression_dim)
+            self.projection_head = ProjectionHead(input_dim=2048, output_dim=self.compression_dim)
             self.headless_mode = True
             print("[CCNet] ✅ Successfully converted to stable headless mode")
             return True
@@ -443,15 +441,15 @@ class ccnet(torch.nn.Module):
         
         return info
 
-class StableHeadlessVerifier:
-    """🔥 안정성 개선된 메트릭 기반 검증기"""
+class HeadlessVerifier:
+    """🔥 메트릭 기반 검증기"""
     def __init__(self, metric_type="cosine", threshold=0.5):
         self.metric_type = metric_type
         self.threshold = threshold
         self.score_history = []
         self.verification_count = 0
         
-        print(f"[StableVerifier] ✅ Initialized:")
+        print(f"[Verifier] ✅ Initialized:")
         print(f"   Metric: {metric_type}")
         print(f"   Threshold: {threshold}")
         print(f"   Stability features: Input validation, NaN protection, Score logging")
@@ -468,7 +466,7 @@ class StableHeadlessVerifier:
             
             # NaN 체크 및 정리
             if torch.isnan(probe_features).any() or torch.isnan(gallery_features).any():
-                print("⚠️ [StableVerifier] NaN detected in features, using safe fallback")
+                print("⚠️ [Verifier] NaN detected in features, using safe fallback")
                 return torch.zeros(gallery_features.size(0), device=probe_features.device)
             
             if self.metric_type == "cosine":
@@ -483,7 +481,7 @@ class StableHeadlessVerifier:
             
             # NaN 체크 (결과)
             if torch.isnan(similarities).any():
-                print("⚠️ [StableVerifier] NaN in similarity results, using zeros")
+                print("⚠️ [Verifier] NaN in similarity results, using zeros")
                 similarities = torch.zeros_like(similarities)
         
         return similarities
@@ -558,7 +556,7 @@ class StableHeadlessVerifier:
             'threshold': self.threshold,
             'match_rate': sum(1 for s in max_scores if s > self.threshold) / len(max_scores),
             'stability_info': {
-                'nan_incidents': 0,  # 여기서는 별도 추적 필요
+                'nan_incidents': 0,
                 'empty_gallery_incidents': 0,
                 'error_recovery_rate': 1.0
             }
@@ -568,7 +566,7 @@ class StableHeadlessVerifier:
         """점수 히스토리 초기화"""
         self.score_history = []
         self.verification_count = 0
-        print(f"[StableVerifier] 📊 History reset")
+        print(f"[Verifier] 📊 History reset")
 
 def create_stable_ccnet_from_config(config):
     """🔥 안정성 개선된 CCNet 생성"""
@@ -588,70 +586,7 @@ def create_stable_ccnet_from_config(config):
     print(f"   Stability: GroupNorm, Input validation, NaN protection")
     
     return model
-# models/ccnet_model.py에 추가할 내용
 
-class UserNodeVerifier(StableHeadlessVerifier):
-    """
-    🔥 User Node 기반 Mahalanobis 검증기
-    
-    Features:
-    - Diagonal Mahalanobis distance
-    - Multi-user verification
-    - Confidence scoring
-    """
-    
-    def __init__(self, node_manager, threshold=0.5):
-        super().__init__(metric_type="mahalanobis", threshold=threshold)
-        self.node_manager = node_manager
-        
-    def verify_with_nodes(self, probe_features: torch.Tensor, top_k: int = 5):
-        """User Node 기반 검증"""
-        
-        if not self.node_manager or not self.node_manager.is_enabled():
-            return {
-                'is_match': False,
-                'matched_user': None,
-                'confidence': 0.0,
-                'reason': 'User node system disabled'
-            }
-        
-        # 가장 가까운 k명 찾기
-        nearest_users = self.node_manager.find_nearest_users(probe_features, k=top_k)
-        
-        if not nearest_users:
-            return {
-                'is_match': False,
-                'matched_user': None,
-                'confidence': 0.0,
-                'reason': 'No registered users'
-            }
-        
-        # 최근접 사용자
-        best_user_id, best_distance = nearest_users[0]
-        
-        # 인증 판정
-        is_match = best_distance < self.threshold
-        
-        # 신뢰도 계산
-        if is_match:
-            # 거리 기반 신뢰도 (0~1)
-            confidence = max(0.0, 1.0 - (best_distance / self.threshold))
-        else:
-            confidence = 0.0
-        
-        return {
-            'is_match': is_match,
-            'matched_user': best_user_id if is_match else None,
-            'distance': best_distance,
-            'confidence': confidence,
-            'top_k_results': nearest_users,
-            'threshold': self.threshold
-        }
-    
-# 🎯 호환성을 위한 별칭
-HeadlessVerifier = StableHeadlessVerifier
-ProjectionHead = StableProjectionHead
-
-print("✅ Stable CCNet model with GroupNorm loaded successfully!")
+print("✅ CCNet model loaded successfully!")
 print("🛡️ Features: Batch-size independent, NaN protection, Input validation")
 print("🚀 Ready for production use in continual learning environments!")

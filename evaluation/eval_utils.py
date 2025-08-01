@@ -1,608 +1,706 @@
-# evaluation/eval_utils.py - 확장된 평가 유틸리티
+# evaluation/evaluator.py - 통합된 평가 시스템
 """
-COCONUT Evaluation Utilities (Extended)
+CoCoNut Unified Evaluation System
 
-FEATURES:
-- Feature extraction and similarity computation
-- Rank-1 accuracy calculation  
-- EER (Equal Error Rate) calculation
-- ROC curve analysis
-- 🔥 NEW: Detailed biometric metrics (FAR/FRR/AUC)
-- 🔥 NEW: Visualization and report generation
-- 🔥 NEW: COCONUT Headless mode specialized evaluation
+모든 평가 관련 기능을 하나로 통합:
+- 기본 성능 평가 (Rank-1, EER)
+- CCNet 스타일 인증
+- End-to-End 평가
+- 시각화 및 리포트 생성
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
+from pathlib import Path
+import json
+import time
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm import tqdm
 from sklearn import metrics
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
-import os
-from pathlib import Path
-import json
-from datetime import datetime
 
-# 기존 함수들 유지
-def extract_features(model, dataloader, device):
-    """주어진 데이터로더에서 모든 특징 벡터와 라벨을 추출합니다."""
-    model.to(device)
-    model.eval()
+from datasets.palm_dataset import MyDataset
+from torch.utils.data import DataLoader
+
+
+class CoconutEvaluator:
+    """
+    CoCoNut 통합 평가 시스템
     
-    features_list = []
-    labels_list = []
+    Features:
+    - 기본 성능 평가 (Rank-1, EER)
+    - CCNet 스타일 인증
+    - End-to-End 평가
+    - 시각화 및 리포트 생성
+    """
+    
+    def __init__(self, model, node_manager=None, device='cuda'):
+        """
+        Args:
+            model: 학습된 CCNet 모델
+            node_manager: User Node Manager (optional)
+            device: 연산 디바이스
+        """
+        self.model = model
+        self.node_manager = node_manager
+        self.device = device
+        
+        # CCNet 스타일 인증 설정
+        self.distance_threshold = 0.5  # 초기값
+        self.feature_dim = 128 if model.headless_mode else 2048
+        
+        # 통계
+        self.stats = {
+            'total_verifications': 0,
+            'correct_verifications': 0,
+            'false_accepts': 0,
+            'false_rejects': 0
+        }
+        
+        print(f"[Evaluator] ✅ Initialized")
+        print(f"[Evaluator] Model: {'Headless' if model.headless_mode else 'Classification'}")
+        print(f"[Evaluator] Feature dim: {self.feature_dim}")
+        if node_manager:
+            print(f"[Evaluator] Registered users: {len(node_manager.nodes)}")
+    
+    # ==================== 기본 평가 함수들 ====================
+    
+    def extract_features(self, dataloader):
+        """데이터로더에서 모든 특징 벡터와 라벨을 추출"""
+        self.model.eval()
+        
+        features_list = []
+        labels_list = []
 
-    with torch.no_grad():
-        for datas, target in tqdm(dataloader, desc="Extracting features"):
-            data = datas[0].to(device)
-            codes = model.getFeatureCode(data)
+        with torch.no_grad():
+            for datas, target in tqdm(dataloader, desc="Extracting features"):
+                data = datas[0].to(self.device)
+                codes = self.model.getFeatureCode(data)
+                
+                features_list.append(codes.cpu().numpy())
+                labels_list.append(target.cpu().numpy())
+                
+        features = np.concatenate(features_list, axis=0)
+        labels = np.concatenate(labels_list, axis=0)
+        
+        print(f"  Extracted {len(features)} features")
+        return features, labels
+
+    def calculate_scores(self, probe_features, gallery_features):
+        """Probe와 Gallery 간의 모든 매칭 점수 계산"""
+        cosine_similarity = np.dot(probe_features, gallery_features.T)
+        cosine_similarity = np.clip(cosine_similarity, -1.0, 1.0)
+        distances = np.arccos(cosine_similarity) / np.pi
+        
+        return distances
+
+    def calculate_rank_accuracy(self, distances, probe_labels, gallery_labels, max_rank=5):
+        """Rank-N 정확도 계산"""
+        num_probes = len(probe_labels)
+        rank_correct = {r: 0 for r in range(1, max_rank + 1)}
+        
+        for i in range(num_probes):
+            # 가장 가까운 순서대로 정렬
+            sorted_indices = np.argsort(distances[i])
             
-            features_list.append(codes.cpu().numpy())
-            labels_list.append(target.cpu().numpy())
+            for rank in range(1, max_rank + 1):
+                # Top-K 안에 정답이 있는지 확인
+                top_k_labels = gallery_labels[sorted_indices[:rank]]
+                if probe_labels[i] in top_k_labels:
+                    rank_correct[rank] += 1
+        
+        rank_accuracies = {}
+        for rank in range(1, max_rank + 1):
+            rank_accuracies[f'rank_{rank}'] = (rank_correct[rank] / num_probes) * 100
             
-    features = np.concatenate(features_list, axis=0)
-    labels = np.concatenate(labels_list, axis=0)
-    
-    print(f"Extracted {len(features)} features.")
-    return features, labels
+        return rank_accuracies
 
-def calculate_scores(probe_features, gallery_features):
-    """Probe 세트와 Gallery 세트 간의 모든 매칭 점수를 계산합니다."""
-    cosine_similarity = np.dot(probe_features, gallery_features.T)
-    cosine_similarity = np.clip(cosine_similarity, -1.0, 1.0)
-    distances = np.arccos(cosine_similarity) / np.pi
-    
-    return distances
+    def calculate_eer(self, genuine_scores, imposter_scores):
+        """EER (Equal Error Rate) 계산"""
+        if len(genuine_scores) == 0 or len(imposter_scores) == 0:
+            return 0.0, 0.0
+        
+        # 음수 점수 처리
+        all_scores = np.concatenate([genuine_scores, imposter_scores])
+        min_score = np.min(all_scores)
+        
+        if min_score < 0:
+            genuine_scores = genuine_scores - min_score
+            imposter_scores = imposter_scores - min_score
+        
+        # 라벨 생성
+        labels = np.concatenate([np.ones_like(genuine_scores), np.zeros_like(imposter_scores)])
+        scores = np.concatenate([genuine_scores, imposter_scores])
 
-def calculate_eer(genuine_scores, imposter_scores):
-    """정규 매칭 점수와 비정규 매칭 점수를 바탕으로 EER을 계산합니다. (음수 점수 지원)"""
-    
-    # 🔥 음수 점수 처리: 전체 점수를 양수로 shift
-    all_scores = np.concatenate([genuine_scores, imposter_scores])
-    min_score = np.min(all_scores)
-    
-    if min_score < 0:
-        print(f"[EER] 음수 점수 감지: {min_score:.6f}, 양수로 shift 적용")
-        genuine_scores = genuine_scores - min_score
-        imposter_scores = imposter_scores - min_score
-        print(f"[EER] Shift 후 범위: [{np.min(all_scores - min_score):.6f}, {np.max(all_scores - min_score):.6f}]")
-    
-    # 🔥 점수 통계 출력
-    print(f"[EER Stats] Genuine: count={len(genuine_scores)}, min={np.min(genuine_scores):.4f}, max={np.max(genuine_scores):.4f}, mean={np.mean(genuine_scores):.4f}")
-    print(f"[EER Stats] Imposter: count={len(imposter_scores)}, min={np.min(imposter_scores):.4f}, max={np.max(imposter_scores):.4f}, mean={np.mean(imposter_scores):.4f}")
-    
-    # 라벨 생성
-    labels = np.concatenate([np.ones_like(genuine_scores), np.zeros_like(imposter_scores)])
-    scores = np.concatenate([genuine_scores, imposter_scores])
+        try:
+            # ROC 커브
+            fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+            
+            # EER 계산
+            eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
+            thresh = interp1d(fpr, thresholds)(-eer)
+            
+        except Exception:
+            # 대안 방법
+            fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+            fnr = 1 - tpr
+            
+            diff = np.abs(fpr - fnr)
+            eer_idx = np.argmin(diff)
+            eer = (fpr[eer_idx] + fnr[eer_idx]) / 2
+            thresh = thresholds[eer_idx]
 
-    try:
-        # 🔥 원래 방식: -scores 사용 (거리가 아닌 유사도로 변환)
-        fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+        return eer * 100, thresh
+
+    def perform_basic_evaluation(self, train_loader, test_loader):
+        """기본 성능 평가 (Rank-1, EER)"""
+        print("\n[Basic Evaluation] Starting...")
         
-        # EER 계산 시도
-        eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
-        thresh = interp1d(fpr, thresholds)(-eer)
+        # 1. 특징 추출
+        gallery_features, gallery_labels = self.extract_features(train_loader)
+        probe_features, probe_labels = self.extract_features(test_loader)
         
-        print(f"[EER] 성공적으로 계산됨: {eer*100:.4f}% at threshold {thresh:.6f}")
+        # 2. 매칭 점수 계산
+        print("  Calculating matching scores...")
+        distances = self.calculate_scores(probe_features, gallery_features)
         
-    except Exception as e:
-        print(f"[EER] 보간 계산 실패: {e}")
-        print("[EER] 대안 방법 사용...")
+        # 3. Rank 정확도 계산
+        rank_accuracies = self.calculate_rank_accuracy(distances, probe_labels, gallery_labels)
+        print(f"  Rank-1 Accuracy: {rank_accuracies['rank_1']:.3f}%")
         
-        # 🔥 대안: 직접 EER 지점 찾기
-        fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
+        # 4. EER 계산
+        genuine_scores = []
+        imposter_scores = []
+        for i in range(len(probe_labels)):
+            for j in range(len(gallery_labels)):
+                score = distances[i, j]
+                if probe_labels[i] == gallery_labels[j]:
+                    genuine_scores.append(score)
+                else:
+                    imposter_scores.append(score)
+
+        eer, threshold = self.calculate_eer(np.array(genuine_scores), np.array(imposter_scores))
+        print(f"  EER: {eer:.4f}% at Threshold: {threshold:.4f}")
+        
+        results = {
+            **rank_accuracies,
+            'eer': eer,
+            'eer_threshold': threshold,
+            'num_gallery': len(gallery_labels),
+            'num_probe': len(probe_labels)
+        }
+        
+        return results
+    
+    # ==================== CCNet 스타일 인증 ====================
+    
+    def compute_ccnet_distance(self, feat1: torch.Tensor, feat2: torch.Tensor) -> float:
+        """CCNet 스타일 코사인 거리 계산"""
+        # 코사인 유사도
+        cosine_sim = torch.dot(feat1, feat2).item()
+        
+        # 안전한 범위로 클리핑
+        cosine_sim = np.clip(cosine_sim, -1.0, 1.0)
+        
+        # 각도 거리 변환
+        distance = np.arccos(cosine_sim) / np.pi
+        
+        return distance
+    
+    def verify_user(self, probe_image: torch.Tensor, top_k: int = 10) -> Dict:
+        """
+        사용자 인증 (CCNet 스타일)
+        
+        Returns:
+            인증 결과 딕셔너리
+        """
+        if not self.node_manager:
+            return {
+                'is_match': False,
+                'error': 'No node manager available'
+            }
+        
+        start_time = time.time()
+        
+        # 1. 프로브 이미지 특징 추출
+        self.model.eval()
+        with torch.no_grad():
+            if len(probe_image.shape) == 3:
+                probe_image = probe_image.unsqueeze(0)
+            probe_image = probe_image.to(self.device)
+            probe_feature = self.model.getFeatureCode(probe_image).squeeze(0)
+        
+        # 2. 가장 가까운 사용자 찾기
+        top_candidates = self.node_manager.find_nearest_users(probe_feature, k=top_k)
+        
+        if not top_candidates:
+            return {
+                'is_match': False,
+                'matched_user': None,
+                'distance': 1.0,
+                'confidence': 0.0,
+                'computation_time': time.time() - start_time
+            }
+        
+        # 3. 정밀 거리 계산
+        precise_results = []
+        
+        for user_id, _ in top_candidates:
+            node = self.node_manager.get_node(user_id)
+            
+            if node and node.mean_embedding is not None:
+                distance = self.compute_ccnet_distance(probe_feature, node.mean_embedding)
+                precise_results.append((user_id, distance))
+        
+        # 거리 기준 정렬
+        precise_results.sort(key=lambda x: x[1])
+        
+        # 4. 최종 매칭 결정
+        if precise_results:
+            best_user_id, best_distance = precise_results[0]
+            is_match = best_distance <= self.distance_threshold
+            
+            confidence = 1.0 - (best_distance / self.distance_threshold) if is_match else 0.0
+            confidence = min(1.0, max(0.0, confidence))
+        else:
+            is_match = False
+            best_user_id = None
+            best_distance = 1.0
+            confidence = 0.0
+        
+        # 통계 업데이트
+        self.stats['total_verifications'] += 1
+        
+        return {
+            'is_match': is_match,
+            'matched_user': best_user_id if is_match else None,
+            'distance': best_distance,
+            'confidence': confidence,
+            'threshold': self.distance_threshold,
+            'top_k_results': precise_results[:5],
+            'computation_time': time.time() - start_time
+        }
+    
+    def calibrate_threshold(self, calibration_data: List[Tuple[torch.Tensor, int]],
+                          target_far: float = 0.01):
+        """임계값 자동 조정"""
+        print(f"\n[Calibration] Starting threshold calibration...")
+        print(f"  Target FAR: {target_far*100:.2f}%")
+        
+        all_distances = []
+        all_labels = []  # 1: genuine, 0: imposter
+        
+        # 모든 쌍에 대해 거리 계산
+        for probe_img, probe_label in tqdm(calibration_data, desc="Calibrating"):
+            result = self.verify_user(probe_img)
+            
+            if 'top_k_results' in result:
+                for user_id, distance in result['top_k_results']:
+                    all_distances.append(distance)
+                    all_labels.append(1 if user_id == probe_label else 0)
+        
+        if not all_distances:
+            print("  ⚠️ No distances calculated")
+            return None
+        
+        # NumPy 배열로 변환
+        distances = np.array(all_distances)
+        labels = np.array(all_labels)
+        
+        # EER 계산
+        fpr, tpr, thresholds = metrics.roc_curve(labels, -distances, pos_label=1)
+        
+        # EER 지점 찾기
         fnr = 1 - tpr
-        
-        # FPR과 FNR이 가장 가까운 지점 찾기
-        diff = np.abs(fpr - fnr)
-        eer_idx = np.argmin(diff)
-        eer = (fpr[eer_idx] + fnr[eer_idx]) / 2
-        thresh = thresholds[eer_idx]
-        
-        print(f"[EER] 대안 계산 결과: {eer*100:.4f}% at threshold {thresh:.6f}")
-
-    return eer * 100, thresh
-
-def calculate_rank1(distances, probe_labels, gallery_labels):
-    """거리 행렬을 바탕으로 Rank-1 정확도를 계산합니다."""
-    correct_predictions = 0
-    num_probes = len(probe_labels)
-
-    indices_of_closest = np.argmin(distances, axis=1)
-    
-    for i in range(num_probes):
-        predicted_label = gallery_labels[indices_of_closest[i]]
-        if probe_labels[i] == predicted_label:
-            correct_predictions += 1
-            
-    rank1_accuracy = (correct_predictions / num_probes) * 100
-    return rank1_accuracy
-
-# 🔥 NEW: 확장된 평가 함수들
-
-def calculate_detailed_biometric_metrics(genuine_scores, imposter_scores, system_info=None):
-    """
-    상세한 생체인식 메트릭 계산
-    
-    Args:
-        genuine_scores: 정품 매칭 점수 배열
-        imposter_scores: 위조 매칭 점수 배열  
-        system_info: 시스템 정보 (COCONUT 관련)
-        
-    Returns:
-        dict: 상세한 메트릭 결과
-    """
-    if len(genuine_scores) == 0 or len(imposter_scores) == 0:
-        print("⚠️ Warning: Empty score arrays")
-        return None
-    
-    # 라벨 생성
-    labels = np.concatenate([np.ones_like(genuine_scores), np.zeros_like(imposter_scores)])
-    scores = np.concatenate([genuine_scores, imposter_scores])
-    
-    # ROC 커브 계산
-    fpr, tpr, thresholds = metrics.roc_curve(labels, -scores, pos_label=1)
-    fnr = 1 - tpr  # False Negative Rate
-    
-    # EER 계산
-    try:
-        eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
-        eer_threshold = interp1d(fpr, thresholds)(eer)
-    except:
-        # 보간 실패 시 가장 가까운 지점 찾기
         eer_idx = np.argmin(np.abs(fpr - fnr))
         eer = (fpr[eer_idx] + fnr[eer_idx]) / 2
-        eer_threshold = thresholds[eer_idx]
-    
-    # AUC 계산
-    auc_score = metrics.auc(fpr, tpr)
-    
-    # 점수 통계
-    genuine_stats = {
-        'mean': np.mean(genuine_scores),
-        'std': np.std(genuine_scores),
-        'min': np.min(genuine_scores),
-        'max': np.max(genuine_scores),
-        'count': len(genuine_scores)
-    }
-    
-    imposter_stats = {
-        'mean': np.mean(imposter_scores),
-        'std': np.std(imposter_scores),
-        'min': np.min(imposter_scores),
-        'max': np.max(imposter_scores),
-        'count': len(imposter_scores)
-    }
-    
-    # d-prime 계산 (분리도 측정)
-    d_prime = abs(genuine_stats['mean'] - imposter_stats['mean']) / \
-              np.sqrt(0.5 * (genuine_stats['std']**2 + imposter_stats['std']**2))
-    
-    # 다양한 임계값에서의 성능
-    threshold_analysis = []
-    test_thresholds = np.linspace(scores.min(), scores.max(), 100)
-    
-    for thresh in test_thresholds:
-        predictions = scores > thresh
+        eer_threshold = -thresholds[eer_idx]
         
-        tp = np.sum((labels == 1) & predictions)
-        tn = np.sum((labels == 0) & ~predictions)
-        fp = np.sum((labels == 0) & predictions)
-        fn = np.sum((labels == 1) & ~predictions)
+        # 목표 FAR에 해당하는 임계값
+        far_idx = np.argmax(fpr >= target_far)
+        far_threshold = -thresholds[far_idx] if far_idx > 0 else -thresholds[0]
         
-        far = fp / (fp + tn) if (fp + tn) > 0 else 0
-        frr = fn / (fn + tp) if (fn + tp) > 0 else 0
-        accuracy = (tp + tn) / len(labels)
+        print(f"\n[Calibration] Results:")
+        print(f"  EER: {eer*100:.2f}% at threshold {eer_threshold:.4f}")
+        print(f"  FAR {target_far*100:.1f}% at threshold {far_threshold:.4f}")
         
-        threshold_analysis.append({
-            'threshold': thresh,
+        # 임계값 업데이트
+        self.distance_threshold = eer_threshold
+        
+        print(f"  ✅ Threshold updated to: {self.distance_threshold:.4f}")
+        
+        return {
+            'eer': eer,
+            'eer_threshold': eer_threshold,
+            'target_far_threshold': far_threshold,
+            'calibration_samples': len(calibration_data)
+        }
+    
+    # ==================== End-to-End 평가 ====================
+    
+    def run_end_to_end_evaluation(self, test_file_path: str, 
+                                 batch_size: int = 32,
+                                 save_results: bool = True,
+                                 output_dir: str = "./evaluation_results") -> Dict:
+        """
+        End-to-End 인증 평가
+        
+        Args:
+            test_file_path: 테스트 파일 경로
+            batch_size: 배치 크기
+            save_results: 결과 저장 여부
+            output_dir: 결과 저장 경로
+            
+        Returns:
+            종합 평가 결과
+        """
+        print("\n" + "="*80)
+        print("🔍 END-TO-END AUTHENTICATION EVALUATION")
+        print("="*80)
+        
+        start_time = time.time()
+        
+        # 1. 테스트 데이터 로드
+        print("\n[Step 1/5] Loading test data...")
+        test_dataset = MyDataset(txt=test_file_path, train=False)
+        test_samples, test_labels = self._prepare_test_data(test_dataset)
+        
+        # 2. 임계값 캘리브레이션
+        if len(test_samples) > 500:
+            print("\n[Step 2/5] Calibrating threshold...")
+            calibration_data = list(zip(test_samples[:500], test_labels[:500]))
+            calibration_result = self.calibrate_threshold(calibration_data)
+        else:
+            print("\n[Step 2/5] Skipping calibration (insufficient data)")
+            calibration_result = None
+        
+        # 3. 전체 테스트셋 평가
+        print("\n[Step 3/5] Evaluating full test set...")
+        eval_results = self._evaluate_test_set(test_samples, test_labels)
+        
+        # 4. 상세 분석
+        print("\n[Step 4/5] Analyzing results...")
+        analysis_results = self._analyze_results(eval_results)
+        
+        # 5. 결과 저장 및 시각화
+        if save_results:
+            print("\n[Step 5/5] Saving results and visualizations...")
+            self._save_results(eval_results, analysis_results, output_dir)
+        
+        total_time = time.time() - start_time
+        
+        # 종합 결과
+        summary = {
+            'test_samples': len(test_samples),
+            'registered_users': len(self.node_manager.nodes) if self.node_manager else 0,
+            'accuracy': analysis_results['accuracy'],
+            'eer': analysis_results['eer'],
+            'rank1_accuracy': analysis_results.get('rank_accuracies', {}).get('rank_1', 0),
+            'far': analysis_results['far'],
+            'frr': analysis_results['frr'],
+            'avg_verification_time_ms': analysis_results['avg_time_ms'],
+            'total_evaluation_time': total_time,
+            'calibration_result': calibration_result,
+            'threshold_used': self.distance_threshold
+        }
+        
+        # 결과 출력
+        self._print_summary(summary)
+        
+        return summary
+    
+    def _prepare_test_data(self, test_dataset) -> Tuple[List[torch.Tensor], List[int]]:
+        """테스트 데이터 준비"""
+        test_samples = []
+        test_labels = []
+        
+        for idx in tqdm(range(len(test_dataset)), desc="Loading test data"):
+            data, label = test_dataset[idx]
+            # 첫 번째 이미지만 사용
+            test_samples.append(data[0])
+            test_labels.append(label if isinstance(label, int) else label.item())
+        
+        print(f"  Loaded {len(test_samples)} test samples")
+        print(f"  Unique users in test set: {len(set(test_labels))}")
+        
+        return test_samples, test_labels
+    
+    def _evaluate_test_set(self, test_samples: List[torch.Tensor], 
+                          test_labels: List[int]) -> List[Dict]:
+        """전체 테스트셋 평가"""
+        all_results = []
+        registered_users = set(self.node_manager.nodes.keys()) if self.node_manager else set()
+        
+        for sample, true_label in tqdm(zip(test_samples, test_labels), 
+                                     total=len(test_samples),
+                                     desc="Evaluating"):
+            # 인증 수행
+            auth_result = self.verify_user(sample)
+            
+            # 결과 저장
+            result_entry = {
+                'true_label': true_label,
+                'is_registered': true_label in registered_users,
+                'prediction': auth_result['matched_user'] if auth_result['is_match'] else None,
+                'is_match': auth_result['is_match'],
+                'distance': auth_result.get('distance', 1.0),
+                'confidence': auth_result.get('confidence', 0.0),
+                'top_5_results': auth_result.get('top_k_results', [])[:5],
+                'computation_time': auth_result.get('computation_time', 0)
+            }
+            all_results.append(result_entry)
+        
+        return all_results
+    
+    def _analyze_results(self, eval_results: List[Dict]) -> Dict:
+        """결과 상세 분석"""
+        total = len(eval_results)
+        correct = 0
+        false_accepts = 0
+        false_rejects = 0
+        true_rejects = 0
+        
+        genuine_distances = []
+        imposter_distances = []
+        
+        rank_correct = {r: 0 for r in range(1, 6)}
+        computation_times = []
+        
+        for result in eval_results:
+            computation_times.append(result['computation_time'])
+            
+            if result['is_registered']:
+                # 등록된 사용자
+                if result['is_match'] and result['prediction'] == result['true_label']:
+                    correct += 1
+                    genuine_distances.append(result['distance'])
+                elif result['is_match'] and result['prediction'] != result['true_label']:
+                    false_accepts += 1
+                    imposter_distances.append(result['distance'])
+                else:  # not is_match
+                    false_rejects += 1
+                    genuine_distances.append(result['distance'])
+                
+                # Rank 정확도
+                for rank, (user_id, _) in enumerate(result['top_5_results'], 1):
+                    if user_id == result['true_label']:
+                        for r in range(rank, 6):
+                            rank_correct[r] += 1
+                        break
+            else:
+                # 미등록 사용자
+                if not result['is_match']:
+                    correct += 1
+                    true_rejects += 1
+                    imposter_distances.append(result['distance'])
+                else:
+                    false_accepts += 1
+                    imposter_distances.append(result['distance'])
+        
+        # 메트릭 계산
+        accuracy = (correct / total) * 100 if total > 0 else 0
+        
+        registered_count = sum(1 for r in eval_results if r['is_registered'])
+        if registered_count > 0:
+            far = (false_accepts / total) * 100
+            frr = (false_rejects / registered_count) * 100
+        else:
+            far = frr = 0
+        
+        # EER 계산
+        if genuine_distances and imposter_distances:
+            eer, eer_threshold = self.calculate_eer(
+                np.array(genuine_distances), 
+                np.array(imposter_distances)
+            )
+        else:
+            eer, eer_threshold = 0, 0
+        
+        # Rank 정확도
+        rank_accuracies = {}
+        if registered_count > 0:
+            for rank in range(1, 6):
+                rank_accuracies[f'rank_{rank}'] = (rank_correct[rank] / registered_count) * 100
+        
+        # 시간 통계
+        avg_time_ms = np.mean(computation_times) * 1000 if computation_times else 0
+        
+        return {
+            'total_samples': total,
+            'registered_samples': registered_count,
+            'correct': correct,
+            'accuracy': accuracy,
+            'false_accepts': false_accepts,
+            'false_rejects': false_rejects,
+            'true_rejects': true_rejects,
             'far': far,
             'frr': frr,
-            'accuracy': accuracy
-        })
-    
-    results = {
-        'eer': eer * 100,
-        'eer_threshold': eer_threshold,
-        'auc': auc_score,
-        'd_prime': d_prime,
-        'genuine_stats': genuine_stats,
-        'imposter_stats': imposter_stats,
-        'roc_curve': {
-            'fpr': fpr,
-            'tpr': tpr,
-            'fnr': fnr,
-            'thresholds': thresholds
-        },
-        'threshold_analysis': threshold_analysis,
-        'raw_scores': {
-            'genuine': genuine_scores,
-            'imposter': imposter_scores
+            'eer': eer,
+            'eer_threshold': eer_threshold,
+            'genuine_distances': genuine_distances,
+            'imposter_distances': imposter_distances,
+            'rank_accuracies': rank_accuracies,
+            'avg_time_ms': avg_time_ms,
+            'min_time_ms': np.min(computation_times) * 1000 if computation_times else 0,
+            'max_time_ms': np.max(computation_times) * 1000 if computation_times else 0
         }
-    }
     
-    # COCONUT 시스템 정보 추가
-    if system_info:
-        results['system_info'] = system_info
+    # ==================== 시각화 및 리포트 ====================
     
-    return results
-
-def save_biometric_evaluation_plots(results, output_dir="./results/evaluation", 
-                                   title_prefix="COCONUT"):
-    """
-    생체인식 평가 그래프들을 저장
-    
-    Args:
-        results: calculate_detailed_biometric_metrics의 결과
-        output_dir: 저장 디렉토리
-        title_prefix: 그래프 제목 접두사
-    """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    # 스타일 설정
-    plt.style.use('default')
-    sns.set_palette("husl")
-    
-    # 1. ROC 커브
-    plt.figure(figsize=(10, 8))
-    plt.plot(results['roc_curve']['fpr'] * 100, 
-             results['roc_curve']['tpr'] * 100, 
-             'b-', linewidth=2, label=f'ROC Curve (AUC = {results["auc"]:.4f})')
-    plt.plot([0, 100], [0, 100], 'k--', alpha=0.5, label='Random Classifier')
-    
-    # EER 포인트 표시
-    eer_point_idx = np.argmin(np.abs(results['roc_curve']['fpr'] - results['roc_curve']['fnr']))
-    plt.plot(results['roc_curve']['fpr'][eer_point_idx] * 100,
-             results['roc_curve']['tpr'][eer_point_idx] * 100,
-             'ro', markersize=8, label=f'EER = {results["eer"]:.3f}%')
-    
-    plt.xlabel('False Acceptance Rate (%)', fontsize=12)
-    plt.ylabel('Genuine Acceptance Rate (%)', fontsize=12)
-    plt.title(f'{title_prefix} ROC Curve', fontsize=14, fontweight='bold')
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-    plt.xlim([0, 10])  # 관심 영역에 집중
-    plt.ylim([90, 100])
-    plt.tight_layout()
-    plt.savefig(output_path / 'roc_curve.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # 2. DET 커브 (Detection Error Tradeoff)
-    plt.figure(figsize=(10, 8))
-    plt.plot(results['roc_curve']['fpr'] * 100,
-             results['roc_curve']['fnr'] * 100,
-             'r-', linewidth=2, label='DET Curve')
-    plt.plot([0, 100], [0, 100], 'k--', alpha=0.5, label='EER Line')
-    
-    # EER 포인트 표시
-    plt.plot(results['roc_curve']['fpr'][eer_point_idx] * 100,
-             results['roc_curve']['fnr'][eer_point_idx] * 100,
-             'go', markersize=8, label=f'EER = {results["eer"]:.3f}%')
-    
-    plt.xlabel('False Acceptance Rate (%)', fontsize=12)
-    plt.ylabel('False Rejection Rate (%)', fontsize=12)
-    plt.title(f'{title_prefix} DET Curve', fontsize=14, fontweight='bold')
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-    plt.xlim([0, 10])
-    plt.ylim([0, 10])
-    plt.tight_layout()
-    plt.savefig(output_path / 'det_curve.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # 3. 점수 분포 히스토그램
-    plt.figure(figsize=(12, 8))
-    
-    # 겹치는 히스토그램
-    plt.hist(results['raw_scores']['genuine'], bins=50, alpha=0.7, 
-             label=f'Genuine ({len(results["raw_scores"]["genuine"])} samples)', 
-             color='blue', density=True)
-    plt.hist(results['raw_scores']['imposter'], bins=50, alpha=0.7,
-             label=f'Imposter ({len(results["raw_scores"]["imposter"])} samples)',
-             color='red', density=True)
-    
-    # EER 임계값 표시
-    plt.axvline(results['eer_threshold'], color='green', linestyle='--', linewidth=2,
-                label=f'EER Threshold = {results["eer_threshold"]:.4f}')
-    
-    # 통계 정보 표시
-    plt.axvline(results['genuine_stats']['mean'], color='blue', linestyle=':', alpha=0.8,
-                label=f'Genuine Mean = {results["genuine_stats"]["mean"]:.4f}')
-    plt.axvline(results['imposter_stats']['mean'], color='red', linestyle=':', alpha=0.8,
-                label=f'Imposter Mean = {results["imposter_stats"]["mean"]:.4f}')
-    
-    plt.xlabel('Similarity Score', fontsize=12)
-    plt.ylabel('Density', fontsize=12)
-    plt.title(f'{title_prefix} Score Distribution (d\' = {results["d_prime"]:.3f})', 
-              fontsize=14, fontweight='bold')
-    plt.legend(fontsize=10)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path / 'score_distribution.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # 4. FAR/FRR vs Threshold
-    plt.figure(figsize=(12, 8))
-    
-    thresholds = [ta['threshold'] for ta in results['threshold_analysis']]
-    fars = [ta['far'] * 100 for ta in results['threshold_analysis']]
-    frrs = [ta['frr'] * 100 for ta in results['threshold_analysis']]
-    
-    plt.plot(thresholds, fars, 'r-', linewidth=2, label='FAR (%)')
-    plt.plot(thresholds, frrs, 'b-', linewidth=2, label='FRR (%)')
-    
-    # EER 포인트 표시
-    plt.axvline(results['eer_threshold'], color='green', linestyle='--', linewidth=2,
-                label=f'EER Threshold = {results["eer_threshold"]:.4f}')
-    plt.axhline(results['eer'], color='green', linestyle='--', linewidth=2,
-                label=f'EER = {results["eer"]:.3f}%')
-    
-    plt.xlabel('Threshold', fontsize=12)
-    plt.ylabel('Error Rate (%)', fontsize=12)
-    plt.title(f'{title_prefix} FAR/FRR vs Threshold', fontsize=14, fontweight='bold')
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-    plt.yscale('log')
-    plt.tight_layout()
-    plt.savefig(output_path / 'far_frr_curve.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"✅ 평가 그래프들이 저장되었습니다: {output_path}")
-
-def generate_evaluation_report(results, output_dir="./results/evaluation", 
-                              system_name="COCONUT"):
-    """
-    평가 결과 리포트 생성 (JSON + 텍스트)
-    
-    Args:
-        results: calculate_detailed_biometric_metrics의 결과
-        output_dir: 저장 디렉토리
-        system_name: 시스템 이름
-    """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    # JSON 리포트 (상세 데이터)
-    report_data = {
-        'system_name': system_name,
-        'evaluation_date': datetime.now().isoformat(),
-        'metrics': {
-            'eer_percent': float(results['eer']),
-            'eer_threshold': float(results['eer_threshold']),
-            'auc': float(results['auc']),
-            'd_prime': float(results['d_prime'])
-        },
-        'genuine_statistics': {k: float(v) for k, v in results['genuine_stats'].items()},
-        'imposter_statistics': {k: float(v) for k, v in results['imposter_stats'].items()},
-        'system_info': results.get('system_info', {})
-    }
-    
-    # JSON 저장
-    with open(output_path / 'evaluation_report.json', 'w') as f:
-        json.dump(report_data, f, indent=2)
-    
-    # 텍스트 리포트 (요약)
-    report_text = f"""
-{'='*80}
-{system_name} 생체인식 시스템 평가 리포트
-{'='*80}
-평가 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-📊 핵심 성능 지표:
-  • Equal Error Rate (EER): {results['eer']:.4f}%
-  • Area Under Curve (AUC): {results['auc']:.6f}
-  • d-prime (분리도): {results['d_prime']:.4f}
-  • EER 임계값: {results['eer_threshold']:.6f}
-
-📈 정품 매칭 통계:
-  • 샘플 수: {results['genuine_stats']['count']:,}
-  • 평균: {results['genuine_stats']['mean']:.6f}
-  • 표준편차: {results['genuine_stats']['std']:.6f}
-  • 범위: [{results['genuine_stats']['min']:.6f}, {results['genuine_stats']['max']:.6f}]
-
-📉 위조 매칭 통계:
-  • 샘플 수: {results['imposter_stats']['count']:,}
-  • 평균: {results['imposter_stats']['mean']:.6f}
-  • 표준편차: {results['imposter_stats']['std']:.6f}
-  • 범위: [{results['imposter_stats']['min']:.6f}, {results['imposter_stats']['max']:.6f}]
-
-🎯 성능 평가:
-"""
-    
-    # 성능 등급 평가
-    if results['eer'] < 0.1:
-        grade = "Excellent (< 0.1%)"
-    elif results['eer'] < 1.0:
-        grade = "Very Good (< 1.0%)"
-    elif results['eer'] < 5.0:
-        grade = "Good (< 5.0%)"
-    elif results['eer'] < 10.0:
-        grade = "Fair (< 10.0%)"
-    else:
-        grade = "Poor (≥ 10.0%)"
-    
-    report_text += f"  • EER 등급: {grade}\n"
-    
-    if results['auc'] > 0.99:
-        auc_grade = "Excellent (> 0.99)"
-    elif results['auc'] > 0.95:
-        auc_grade = "Very Good (> 0.95)"
-    elif results['auc'] > 0.90:
-        auc_grade = "Good (> 0.90)"
-    else:
-        auc_grade = "Needs Improvement (≤ 0.90)"
-    
-    report_text += f"  • AUC 등급: {auc_grade}\n"
-    
-    # 시스템 정보 추가
-    if 'system_info' in results and results['system_info']:
-        report_text += f"\n🔧 시스템 정보:\n"
-        for key, value in results['system_info'].items():
-            report_text += f"  • {key}: {value}\n"
-    
-    report_text += f"\n{'='*80}\n"
-    report_text += "📁 생성된 파일들:\n"
-    report_text += "  • roc_curve.png - ROC 커브\n"
-    report_text += "  • det_curve.png - DET 커브\n"
-    report_text += "  • score_distribution.png - 점수 분포\n"
-    report_text += "  • far_frr_curve.png - FAR/FRR 커브\n"
-    report_text += "  • evaluation_report.json - 상세 데이터\n"
-    report_text += "  • evaluation_summary.txt - 이 리포트\n"
-    report_text += f"{'='*80}\n"
-    
-    # 텍스트 저장
-    with open(output_path / 'evaluation_summary.txt', 'w', encoding='utf-8') as f:
-        f.write(report_text)
-    
-    print(f"✅ 평가 리포트가 생성되었습니다: {output_path}")
-    print(f"📊 EER: {results['eer']:.4f}%, AUC: {results['auc']:.6f}")
-    
-    return report_data
-
-def perform_coconut_evaluation(model, train_loader, test_loader, device, 
-                              save_plots=True, save_report=True,
-                              output_dir="./results/coconut_evaluation"):
-    """
-    COCONUT 시스템 전용 종합 평가
-    
-    Args:
-        model: COCONUT 모델 (headless mode)
-        train_loader: 갤러리 데이터로더
-        test_loader: 프로브 데이터로더  
-        device: 연산 디바이스
-        save_plots: 그래프 저장 여부
-        save_report: 리포트 저장 여부
-        output_dir: 결과 저장 디렉토리
+    def _save_results(self, eval_results: List[Dict], 
+                     analysis: Dict, output_dir: str):
+        """결과 저장 및 시각화"""
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
-    Returns:
-        dict: 상세한 평가 결과
-    """
-    print("\n" + "="*80)
-    print("🥥 COCONUT 시스템 종합 평가 시작")
-    print("="*80)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 1. JSON 결과 저장
+        summary_data = {
+            'timestamp': timestamp,
+            'analysis': analysis,
+            'threshold_used': self.distance_threshold,
+            'node_manager_stats': self.node_manager.get_statistics() if self.node_manager else None
+        }
+        
+        with open(output_path / f'evaluation_summary_{timestamp}.json', 'w') as f:
+            json.dump(summary_data, f, indent=2)
+        
+        # 2. 시각화
+        self._create_visualizations(analysis, output_path, timestamp)
+        
+        print(f"  ✅ Results saved to: {output_path}")
     
-    # 1. 기본 평가 (기존 함수 활용)
-    basic_results = perform_evaluation(model, train_loader, test_loader, device)
-    
-    # 2. 특징 추출
-    print("\n📊 특징 추출 중...")
-    gallery_features, gallery_labels = extract_features(model, train_loader, device)
-    probe_features, probe_labels = extract_features(model, test_loader, device)
-    
-    # 3. 유사도 계산 (cosine similarity 사용)
-    print("🔄 유사도 계산 중...")
-    similarities = np.dot(probe_features, gallery_features.T)
-    
-    # 4. Genuine/Imposter 점수 분리
-    genuine_scores = []
-    imposter_scores = []
-    
-    for i, probe_label in enumerate(probe_labels):
-        for j, gallery_label in enumerate(gallery_labels):
-            score = similarities[i, j]
+    def _create_visualizations(self, analysis: Dict, 
+                              output_path: Path, timestamp: str):
+        """결과 시각화"""
+        plt.style.use('seaborn-v0_8-darkgrid')
+        
+        # 1. 거리 분포 히스토그램
+        plt.figure(figsize=(12, 6))
+        
+        if analysis['genuine_distances']:
+            plt.hist(analysis['genuine_distances'], bins=50, alpha=0.7, 
+                    label=f'Genuine (n={len(analysis["genuine_distances"])})', 
+                    color='green', density=True)
+        
+        if analysis['imposter_distances']:
+            plt.hist(analysis['imposter_distances'], bins=50, alpha=0.7,
+                    label=f'Imposter (n={len(analysis["imposter_distances"])})', 
+                    color='red', density=True)
+        
+        plt.axvline(self.distance_threshold, color='blue', 
+                   linestyle='--', linewidth=2,
+                   label=f'Threshold = {self.distance_threshold:.3f}')
+        
+        plt.xlabel('Distance')
+        plt.ylabel('Density')
+        plt.title('Distance Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(output_path / f'distance_distribution_{timestamp}.png', dpi=300)
+        plt.close()
+        
+        # 2. ROC 커브
+        if analysis['genuine_distances'] and analysis['imposter_distances']:
+            plt.figure(figsize=(8, 8))
             
-            if probe_label == gallery_label:
-                genuine_scores.append(score)
-            else:
-                imposter_scores.append(score)
+            labels = ([1] * len(analysis['genuine_distances']) + 
+                     [0] * len(analysis['imposter_distances']))
+            scores = ([-d for d in analysis['genuine_distances']] + 
+                     [-d for d in analysis['imposter_distances']])
+            
+            fpr, tpr, _ = metrics.roc_curve(labels, scores, pos_label=1)
+            auc_score = metrics.auc(fpr, tpr)
+            
+            plt.plot(fpr * 100, tpr * 100, 'b-', linewidth=2, 
+                    label=f'ROC (AUC = {auc_score:.4f})')
+            plt.plot([0, 100], [0, 100], 'k--', alpha=0.5, label='Random')
+            
+            eer_point = analysis['eer']
+            plt.plot(eer_point, 100 - eer_point, 'ro', markersize=10, 
+                    label=f'EER = {eer_point:.2f}%')
+            
+            plt.xlabel('False Acceptance Rate (%)')
+            plt.ylabel('Genuine Acceptance Rate (%)')
+            plt.title('ROC Curve')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.xlim([0, 20])
+            plt.ylim([80, 100])
+            plt.tight_layout()
+            plt.savefig(output_path / f'roc_curve_{timestamp}.png', dpi=300)
+            plt.close()
+        
+        # 3. Rank 정확도
+        if analysis['rank_accuracies']:
+            plt.figure(figsize=(10, 6))
+            
+            ranks = list(range(1, 6))
+            accuracies = [analysis['rank_accuracies'].get(f'rank_{r}', 0) for r in ranks]
+            
+            bars = plt.bar(ranks, accuracies, color='skyblue', edgecolor='navy')
+            
+            for bar, acc in zip(bars, accuracies):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                        f'{acc:.1f}%', ha='center', va='bottom')
+            
+            plt.xlabel('Rank')
+            plt.ylabel('Accuracy (%)')
+            plt.title('Rank-N Accuracy')
+            plt.ylim([0, 105])
+            plt.grid(True, axis='y', alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(output_path / f'rank_accuracy_{timestamp}.png', dpi=300)
+            plt.close()
     
-    # 5. 시스템 정보 수집
-    system_info = {}
-    if hasattr(model, 'get_model_info'):
-        system_info = model.get_model_info()
-    
-    system_info.update({
-        'probe_samples': len(probe_features),
-        'gallery_samples': len(gallery_features),
-        'genuine_comparisons': len(genuine_scores),
-        'imposter_comparisons': len(imposter_scores),
-        'feature_dimension': probe_features.shape[1],
-        'evaluation_type': 'COCONUT_Headless'
-    })
-    
-    # 6. 상세 메트릭 계산
-    print("📈 상세 메트릭 계산 중...")
-    detailed_results = calculate_detailed_biometric_metrics(
-        np.array(genuine_scores), 
-        np.array(imposter_scores),
-        system_info
-    )
-    
-    if detailed_results is None:
-        print("❌ 메트릭 계산 실패")
-        return basic_results
-    
-    # 7. 그래프 생성
-    if save_plots:
-        print("📊 평가 그래프 생성 중...")
-        save_biometric_evaluation_plots(
-            detailed_results, 
-            output_dir=output_dir,
-            title_prefix="COCONUT"
-        )
-    
-    # 8. 리포트 생성
-    if save_report:
-        print("📄 평가 리포트 생성 중...")
-        generate_evaluation_report(
-            detailed_results,
-            output_dir=output_dir,
-            system_name="COCONUT"
-        )
-    
-    # 9. 결과 통합
-    final_results = {
-        **basic_results,
-        'detailed_metrics': detailed_results,
-        'output_directory': output_dir
-    }
-    
-    print("\n" + "="*80)
-    print("🎉 COCONUT 평가 완료!")
-    print(f"📊 EER: {detailed_results['eer']:.4f}%")
-    print(f"📈 AUC: {detailed_results['auc']:.6f}")
-    print(f"📁 결과 저장: {output_dir}")
-    print("="*80)
-    
-    return final_results
+    def _print_summary(self, summary: Dict):
+        """결과 요약 출력"""
+        print("\n" + "="*80)
+        print("📊 EVALUATION SUMMARY")
+        print("="*80)
+        
+        print(f"\n🔍 Dataset Information:")
+        print(f"  - Test samples: {summary['test_samples']}")
+        print(f"  - Registered users: {summary['registered_users']}")
+        print(f"  - Distance threshold: {summary['threshold_used']:.4f}")
+        
+        print(f"\n📈 Performance Metrics:")
+        print(f"  - Overall Accuracy: {summary['accuracy']:.2f}%")
+        print(f"  - Rank-1 Accuracy: {summary['rank1_accuracy']:.2f}%")
+        print(f"  - EER: {summary['eer']:.2f}%")
+        print(f"  - FAR: {summary['far']:.2f}%")
+        print(f"  - FRR: {summary['frr']:.2f}%")
+        
+        print(f"\n⚡ Speed Performance:")
+        print(f"  - Avg verification time: {summary['avg_verification_time_ms']:.2f} ms")
+        print(f"  - Total evaluation time: {summary['total_evaluation_time']:.1f} seconds")
+        
+        print("\n" + "="*80)
 
-# 기존 perform_evaluation 함수는 그대로 유지
+
+# 편의 함수들
 def perform_evaluation(model, train_loader, test_loader, device):
-    """모델의 전체 성능 평가를 수행하는 메인 함수 (기존 버전)"""
-    print("\n--- Starting Full Evaluation ---")
-    
-    # 1. 특징 추출
-    gallery_features, gallery_labels = extract_features(model, train_loader, device)
-    probe_features, probe_labels = extract_features(model, test_loader, device)
-    
-    # 2. 매칭 점수 계산
-    print("Calculating matching scores...")
-    distances = calculate_scores(probe_features, gallery_features)
-    
-    # 3. Rank-1 정확도 계산
-    rank1_acc = calculate_rank1(distances, probe_labels, gallery_labels)
-    print(f"Rank-1 Accuracy: {rank1_acc:.3f}%")
-    
-    # 4. EER 계산
-    genuine_scores = []
-    imposter_scores = []
-    for i in range(len(probe_labels)):
-        for j in range(len(gallery_labels)):
-            score = distances[i, j]
-            if probe_labels[i] == gallery_labels[j]:
-                genuine_scores.append(score)
-            else:
-                imposter_scores.append(score)
+    """기본 성능 평가 실행 (기존 코드와의 호환성)"""
+    evaluator = CoconutEvaluator(model, device=device)
+    return evaluator.perform_basic_evaluation(train_loader, test_loader)
 
-    eer, threshold = calculate_eer(np.array(genuine_scores), np.array(imposter_scores))
-    print(f"Equal Error Rate (EER): {eer:.4f}% at Threshold: {threshold:.4f}")
+def run_end_to_end_evaluation(model, node_manager, config):
+    """End-to-End 평가 실행 (기존 코드와의 호환성)"""
+    test_file = getattr(config.dataset, 'test_set_file', None)
+    if not test_file:
+        print("⚠️ No test file specified in config")
+        return None
     
-    results = {
-        'rank1_accuracy': rank1_acc,
-        'eer': eer,
-        'threshold': threshold
-    }
-    return results
+    evaluator = CoconutEvaluator(model, node_manager)
+    return evaluator.run_end_to_end_evaluation(
+        test_file_path=test_file,
+        save_results=True,
+        output_dir="./evaluation_results"
+    )

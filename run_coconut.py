@@ -18,7 +18,7 @@ from pathlib import Path
 
 from config.config_parser import ConfigParser
 from framework.coconut import CoconutSystem
-from evaluation.eval_utils import perform_evaluation
+from evaluation.eval_utils import perform_evaluation, run_end_to_end_evaluation
 from datasets.palm_dataset import MyDataset
 
 def setup_experiment(args):

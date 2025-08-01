@@ -1,13 +1,12 @@
-# framework/replay_buffer.py - Loop Closure 지원 추가 버전
+# framework/replay_buffer.py - 정리된 버전
 
 """
-CoCoNut Simplified Replay Buffer with Loop Closure Support
+CoCoNut Replay Buffer with Loop Closure Support
 
-🔥 NEW FEATURES:
+🔥 FEATURES:
 - Priority queue for loop closure samples
 - User-specific sample retrieval
 - Enhanced sampling strategies
-- PQ compression preparation
 """
 
 import os
@@ -28,12 +27,11 @@ except ImportError:
 
 import torch
 import torch.nn.functional as F
-import torchvision.transforms as transforms
 from PIL import Image
 
-class SimplifiedReplayBuffer:
+class ReplayBuffer:
     def __init__(self, config, storage_dir: Path, feature_dimension: int = 128):
-        """단순화된 리플레이 버퍼 with Loop Closure support"""
+        """리플레이 버퍼 with Loop Closure support"""
         self.config = config
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -68,7 +66,7 @@ class SimplifiedReplayBuffer:
         self.state_file = self.storage_dir / 'buffer_state.pkl'
         self._load_state()
         
-        print(f"[Buffer] 🥥 Enhanced Replay Buffer initialized")
+        print(f"[Buffer] 🥥 Replay Buffer initialized")
         print(f"[Buffer] Max size: {self.buffer_size}")
         print(f"[Buffer] Per-user limit: {self.samples_per_user_limit}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
@@ -76,7 +74,7 @@ class SimplifiedReplayBuffer:
 
     def add_if_diverse(self, image: torch.Tensor, user_id: int, embedding: torch.Tensor = None):
         """
-        다양성 기반 추가 (기존과 동일)
+        다양성 기반 추가
         
         Args:
             image: 이미지
@@ -148,13 +146,11 @@ class SimplifiedReplayBuffer:
                 if len(sampled_images) < num_samples:
                     sampled_images.append(item['image'])
                     sampled_labels.append(item['user_id'])
-                    # 🔥 FIX: item의 ID를 사용하여 인덱스 추가
                     used_indices.add(item['id'])
         
         # 3. 랜덤 샘플링
         remaining_samples = num_samples - len(sampled_images)
         if remaining_samples > 0:
-            # 🔥 FIX: ID 기반으로 가능한 인덱스 찾기
             available_indices = []
             for i, storage_item in enumerate(self.image_storage):
                 if storage_item['id'] not in used_indices:
@@ -240,7 +236,6 @@ class SimplifiedReplayBuffer:
         query_tensor = torch.stack(query_embeddings).mean(dim=0, keepdim=True)
         query_np = query_tensor.cpu().numpy().astype('float32')
         
-        # 🔥 FIX: 2D shape 확인 (batch_size, feature_dim)
         if len(query_np.shape) == 3:
             # (1, 1, feature_dim) -> (1, feature_dim)
             query_np = query_np.squeeze(0)
@@ -316,17 +311,15 @@ class SimplifiedReplayBuffer:
             'timestamp': len(self.image_storage)  # 추가 순서
         })
         
-        # 임베딩 저장 - shape 확인 및 수정
+        # 임베딩 저장
         embedding_np = embedding.cpu().numpy().astype('float32')
         
-        # 🔥 FIX: 1차원 배열을 2차원으로 변환
         if len(embedding_np.shape) == 1:
             embedding_np = embedding_np.reshape(1, -1)
         
         if FAISS_AVAILABLE:
             faiss.normalize_L2(embedding_np)
         
-        # 🔥 FIX: 저장할 때는 다시 1차원으로
         self.stored_embeddings.append(embedding_np.squeeze().copy())
         
         # Faiss 인덱스 업데이트
@@ -334,7 +327,6 @@ class SimplifiedReplayBuffer:
             self._initialize_faiss()
         
         if FAISS_AVAILABLE and self.faiss_index is not None:
-            # embedding_np는 이미 2D shape
             self.faiss_index.add_with_ids(embedding_np, np.array([unique_id]))
         
         # 메타데이터
@@ -444,7 +436,7 @@ class SimplifiedReplayBuffer:
             self.faiss_index.add_with_ids(embedding_np, np.array([item['id']]))
 
     def _setup_augmentation_transforms(self):
-        """데이터 증강 설정 (기존과 동일)"""
+        """데이터 증강 설정"""
         self.augmentation_transforms = None
 
     def get_statistics(self) -> Dict:
@@ -503,6 +495,3 @@ class SimplifiedReplayBuffer:
                   f"{len(self.priority_queue)} priority items")
         except Exception as e:
             print(f"[Buffer] Failed to load state: {e}")
-
-# 호환성을 위한 별칭
-CoconutReplayBuffer = SimplifiedReplayBuffer

@@ -1,13 +1,12 @@
-# framework/coconut.py - 마할라노비스 제거 버전
+# framework/coconut.py - 정리된 버전
 
 """
-=== SIMPLIFIED COCONUT STAGE 2: CONTINUAL LEARNING ===
+=== COCONUT STAGE 2: CONTINUAL LEARNING ===
 
-🔥 MAJOR CHANGES:
-- Mahalanobis loss REMOVED
+🔥 SIMPLIFIED VERSION:
 - SupCon loss only
-- Simplified training process
 - User Node system maintained
+- Clean and simple naming
 """
 
 import torch
@@ -24,27 +23,26 @@ import datetime
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional
 import numpy as np
-import random
 
 from models.ccnet_model import ccnet, HeadlessVerifier
-from framework.replay_buffer import SimplifiedReplayBuffer
+from framework.replay_buffer import ReplayBuffer
 from framework.losses import create_coconut_loss
-from framework.user_node import SimplifiedUserNodeManager, SimplifiedUserNode
+from framework.user_node import UserNodeManager, UserNode
 from datasets.palm_dataset import MyDataset
 from torch.utils.data import DataLoader
 
-class SimplifiedBatchCoconutSystem:
+class CoconutSystem:
     def __init__(self, config):
         """
-        간소화된 배치 기반 CoCoNut 연속학습 시스템
+        배치 기반 CoCoNut 연속학습 시스템
         
         DESIGN:
-        - SupCon loss only (Mahalanobis removed)
+        - SupCon loss only
         - User Node based authentication
         - Simplified training process
         """
         print("="*80)
-        print("🥥 SIMPLIFIED COCONUT: CONTINUAL LEARNING")
+        print("🥥 COCONUT: CONTINUAL LEARNING")
         print("="*80)
         
         self.config = config
@@ -72,7 +70,7 @@ class SimplifiedBatchCoconutSystem:
         print(f"   Hard negative ratio: {self.hard_negative_ratio:.1%}")
         print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
         print(f"   🎯 User Nodes: {'ENABLED' if self.user_nodes_enabled else 'DISABLED'}")
-        print(f"   📊 Loss: SupCon only (Mahalanobis REMOVED)")
+        print(f"   📊 Loss: SupCon only")
         print("="*80)
         
         # Checkpoint directory
@@ -93,11 +91,11 @@ class SimplifiedBatchCoconutSystem:
         # Load checkpoint if exists
         self._load_checkpoint()
         
-        print(f"[System] 🥥 Simplified CoCoNut System ready!")
+        print(f"[System] 🥥 CoCoNut System ready!")
         print(f"[System] Starting from step: {self.global_step}")
 
     def _initialize_models(self):
-        """모델 초기화 (기존과 동일)"""
+        """모델 초기화"""
         print(f"[System] Initializing models...")
         cfg_model = self.config.palm_recognizer
         
@@ -143,11 +141,11 @@ class SimplifiedBatchCoconutSystem:
         self.learner_net.train()
 
     def _initialize_replay_buffer(self):
-        """리플레이 버퍼 초기화 (기존과 동일)"""
+        """리플레이 버퍼 초기화"""
         print("[System] Initializing replay buffer...")
         cfg_buffer = self.config.replay_buffer
         
-        self.replay_buffer = SimplifiedReplayBuffer(
+        self.replay_buffer = ReplayBuffer(
             config=cfg_buffer,
             storage_dir=Path(cfg_buffer.storage_path),
             feature_dimension=self.feature_dimension
@@ -171,7 +169,7 @@ class SimplifiedBatchCoconutSystem:
             self.verifier = None
 
     def _initialize_optimizer(self):
-        """옵티마이저 초기화 - 간소화됨"""
+        """옵티마이저 초기화"""
         cfg_model = self.config.palm_recognizer
         cfg_loss = self.config.loss
         
@@ -180,7 +178,7 @@ class SimplifiedBatchCoconutSystem:
             lr=cfg_model.learning_rate
         )
         
-        # 간소화된 손실 함수 (SupCon만)
+        # 손실 함수 (SupCon만)
         self.criterion = create_coconut_loss(cfg_loss.__dict__)
         
         print(f"[System] ✅ Optimizer initialized (lr: {cfg_model.learning_rate})")
@@ -195,7 +193,7 @@ class SimplifiedBatchCoconutSystem:
             node_config = self.user_node_config.__dict__.copy()
             node_config.pop('config_file', None)  # config_file 제거
             
-            self.node_manager = SimplifiedUserNodeManager(
+            self.node_manager = UserNodeManager(
                 config=node_config,
                 device=self.device
             )
@@ -207,7 +205,7 @@ class SimplifiedBatchCoconutSystem:
 
     def process_label_batch(self, samples: List[torch.Tensor], user_id: int):
         """
-        배치 단위 처리 - 간소화 버전
+        배치 단위 처리
         
         Args:
             samples: 한 라벨의 모든 샘플들
@@ -222,7 +220,7 @@ class SimplifiedBatchCoconutSystem:
             new_user_id=user_id
         )
         
-        # 2. 간소화된 학습 수행 (SupCon만)
+        # 2. 학습 수행 (SupCon만)
         adaptation_epochs = self.config.continual_learner.adaptation_epochs
         
         for epoch in range(adaptation_epochs):
@@ -262,7 +260,7 @@ class SimplifiedBatchCoconutSystem:
         }
 
     def _train_step(self, batch_data: Dict) -> Dict[str, torch.Tensor]:
-        """한 스텝 학습 - 간소화됨"""
+        """한 스텝 학습"""
         images = batch_data['images']
         labels = batch_data['labels']
         
@@ -289,7 +287,7 @@ class SimplifiedBatchCoconutSystem:
         embeddings_tensor = torch.cat(embeddings, dim=0)
         labels_tensor = torch.tensor(labels, dtype=torch.long, device=self.device)
         
-        # 간소화된 손실 (SupCon만)
+        # 손실 (SupCon만)
         loss_dict = self.criterion(embeddings_tensor, labels_tensor)
         
         # Backward
@@ -301,7 +299,7 @@ class SimplifiedBatchCoconutSystem:
     def _construct_training_batch(self, new_samples: List[torch.Tensor], 
                                  new_embeddings: torch.Tensor, 
                                  new_user_id: int) -> Dict:
-        """학습용 배치 구성 (기존과 동일)"""
+        """학습용 배치 구성"""
         
         # Calculate how many samples we need from buffer
         buffer_samples_needed = max(0, self.training_batch_size - len(new_samples))
@@ -430,7 +428,7 @@ class SimplifiedBatchCoconutSystem:
         return set()
 
     def _save_checkpoint(self):
-        """체크포인트 저장 - 간소화됨"""
+        """체크포인트 저장"""
         checkpoint = {
             'global_step': self.global_step,
             'processed_users': self.processed_users,
@@ -481,18 +479,18 @@ class SimplifiedBatchCoconutSystem:
         print(f"[Checkpoint] ✅ Resumed from step {self.global_step}")
 
     def _save_final_model(self):
-        """최종 모델 저장 - 간소화됨"""
+        """최종 모델 저장"""
         save_path = Path(self.config.model_saving.final_save_path)
         save_path.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Save learner
-        learner_path = save_path / f'coconut_simplified_learner_{timestamp}.pth'
+        learner_path = save_path / f'coconut_learner_{timestamp}.pth'
         torch.save(self.learner_net.state_dict(), learner_path)
         
         # Save predictor
-        predictor_path = save_path / f'coconut_simplified_predictor_{timestamp}.pth'
+        predictor_path = save_path / f'coconut_predictor_{timestamp}.pth'
         torch.save(self.predictor_net.state_dict(), predictor_path)
         
         # Save metadata
@@ -512,7 +510,7 @@ class SimplifiedBatchCoconutSystem:
         if self.node_manager and self.user_nodes_enabled:
             metadata['user_node_stats'] = self.node_manager.get_statistics()
         
-        metadata_path = save_path / f'coconut_simplified_metadata_{timestamp}.json'
+        metadata_path = save_path / f'coconut_metadata_{timestamp}.json'
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
         
@@ -550,7 +548,3 @@ class SimplifiedBatchCoconutSystem:
         )
         
         return results
-
-# 호환성을 위한 별칭
-BatchCoconutSystem = SimplifiedBatchCoconutSystem
-CoconutSystem = SimplifiedBatchCoconutSystem

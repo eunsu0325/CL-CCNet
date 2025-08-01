@@ -1,11 +1,10 @@
-# framework/losses.py - 마할라노비스 제거 버전
+# framework/losses.py - 정리된 버전
 """
-Simplified Loss Functions for CoCoNut
+Loss Functions for CoCoNut
 
 DESIGN PHILOSOPHY:
-- SupConLoss만 사용
-- 마할라노비스 손실 제거
-- 단순하고 효과적인 학습
+- SupConLoss only for online learning
+- Clean and simple implementation
 """
 
 import torch
@@ -103,23 +102,20 @@ class SupConLoss(nn.Module):
         return loss
 
 
-class SimplifiedContrastiveLoss(nn.Module):
+class ContrastiveLoss(nn.Module):
     """
-    간소화된 대조 학습 손실 (SupCon만 사용)
-    
-    마할라노비스 제거됨
+    대조 학습 손실 (SupCon만 사용)
     """
     
     def __init__(self, config: Dict):
-        super(SimplifiedContrastiveLoss, self).__init__()
+        super(ContrastiveLoss, self).__init__()
         
         # SupCon 설정
         self.temperature = config.get('temp', 0.07)
         self.supcon_loss = SupConLoss(temperature=self.temperature)
         
-        print(f"[Loss] Simplified Loss initialized:")
+        print(f"[Loss] Contrastive Loss initialized:")
         print(f"   SupCon temperature: {self.temperature}")
-        print(f"   Mahalanobis: REMOVED")
     
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -144,44 +140,6 @@ class SimplifiedContrastiveLoss(nn.Module):
         }
 
 
-def create_coconut_loss(config: Dict) -> SimplifiedContrastiveLoss:
-    """CoCoNut용 간소화된 손실함수 생성"""
-    return SimplifiedContrastiveLoss(config)
-
-
-def test_simplified_loss():
-    """간소화된 손실 함수 테스트"""
-    print("\n=== Testing Simplified Loss ===")
-    
-    # 테스트 데이터
-    batch_size = 20
-    feature_dim = 128
-    num_classes = 4
-    
-    # 각 클래스별로 클러스터 생성
-    embeddings = []
-    labels = []
-    
-    for i in range(num_classes):
-        # 각 클래스는 다른 중심을 가짐
-        center = torch.randn(feature_dim) * 5
-        class_samples = center + torch.randn(batch_size // num_classes, feature_dim) * 0.5
-        embeddings.append(class_samples)
-        labels.extend([i] * (batch_size // num_classes))
-    
-    embeddings = torch.cat(embeddings, dim=0)
-    labels = torch.tensor(labels)
-    
-    # Loss 계산
-    config = {'temp': 0.07}
-    loss_fn = create_coconut_loss(config)
-    result = loss_fn(embeddings, labels)
-    
-    print(f"Total Loss: {result['total'].item():.4f}")
-    print(f"SupCon Loss: {result['supcon'].item():.4f}")
-    
-    print("=== Test Complete ===\n")
-
-
-if __name__ == "__main__":
-    test_simplified_loss()
+def create_coconut_loss(config: Dict) -> ContrastiveLoss:
+    """CoCoNut용 손실함수 생성"""
+    return ContrastiveLoss(config)
