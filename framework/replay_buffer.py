@@ -113,17 +113,7 @@ class SimplifiedReplayBuffer:
 
     def sample_for_training(self, num_samples: int, current_embeddings: List[torch.Tensor], 
                           current_user_id: int) -> Tuple[List, List]:
-        """
-        학습을 위한 샘플링 - 🔥 Loop Closure 우선순위 지원
-        
-        Args:
-            num_samples: 필요한 샘플 수
-            current_embeddings: 현재 배치의 임베딩들
-            current_user_id: 현재 사용자 ID
-            
-        Returns:
-            (images, labels)
-        """
+        """학습을 위한 샘플링 - 🔥 Loop Closure 우선순위 지원"""
         if len(self.image_storage) == 0:
             return [], []
         
@@ -158,14 +148,17 @@ class SimplifiedReplayBuffer:
                 if len(sampled_images) < num_samples:
                     sampled_images.append(item['image'])
                     sampled_labels.append(item['user_id'])
-                    idx = self.image_storage.index(item)
-                    used_indices.add(idx)
+                    # 🔥 FIX: item의 ID를 사용하여 인덱스 추가
+                    used_indices.add(item['id'])
         
         # 3. 랜덤 샘플링
         remaining_samples = num_samples - len(sampled_images)
         if remaining_samples > 0:
-            available_indices = [i for i in range(len(self.image_storage)) 
-                               if i not in used_indices]
+            # 🔥 FIX: ID 기반으로 가능한 인덱스 찾기
+            available_indices = []
+            for i, storage_item in enumerate(self.image_storage):
+                if storage_item['id'] not in used_indices:
+                    available_indices.append(i)
             
             if available_indices:
                 random_indices = random.choices(available_indices, 
@@ -246,6 +239,15 @@ class SimplifiedReplayBuffer:
         # 평균 임베딩으로 쿼리
         query_tensor = torch.stack(query_embeddings).mean(dim=0, keepdim=True)
         query_np = query_tensor.cpu().numpy().astype('float32')
+        
+        # 🔥 FIX: 2D shape 확인 (batch_size, feature_dim)
+        if len(query_np.shape) == 3:
+            # (1, 1, feature_dim) -> (1, feature_dim)
+            query_np = query_np.squeeze(0)
+        elif len(query_np.shape) == 1:
+            # (feature_dim,) -> (1, feature_dim)
+            query_np = query_np.reshape(1, -1)
+        
         faiss.normalize_L2(query_np)
         
         # FAISS 검색
@@ -274,7 +276,11 @@ class SimplifiedReplayBuffer:
         
         if FAISS_AVAILABLE and self.faiss_index:
             # FAISS 사용
-            query = embedding.cpu().numpy().astype('float32').reshape(1, -1)
+            query = embedding.cpu().numpy().astype('float32')
+            if len(query.shape) == 1:
+                query = query.reshape(1, -1)
+            elif len(query.shape) == 3:
+                query = query.squeeze(0)
             faiss.normalize_L2(query)
             
             # 사용자 샘플들만 검색하도록 임시 인덱스 생성
@@ -310,18 +316,26 @@ class SimplifiedReplayBuffer:
             'timestamp': len(self.image_storage)  # 추가 순서
         })
         
-        # 임베딩 저장
+        # 임베딩 저장 - shape 확인 및 수정
         embedding_np = embedding.cpu().numpy().astype('float32')
+        
+        # 🔥 FIX: 1차원 배열을 2차원으로 변환
+        if len(embedding_np.shape) == 1:
+            embedding_np = embedding_np.reshape(1, -1)
+        
         if FAISS_AVAILABLE:
             faiss.normalize_L2(embedding_np)
-        self.stored_embeddings.append(embedding_np.copy())
+        
+        # 🔥 FIX: 저장할 때는 다시 1차원으로
+        self.stored_embeddings.append(embedding_np.squeeze().copy())
         
         # Faiss 인덱스 업데이트
         if self.faiss_index is None:
             self._initialize_faiss()
         
         if FAISS_AVAILABLE and self.faiss_index is not None:
-            self.faiss_index.add_with_ids(embedding_np.reshape(1, -1), np.array([unique_id]))
+            # embedding_np는 이미 2D shape
+            self.faiss_index.add_with_ids(embedding_np, np.array([unique_id]))
         
         # 메타데이터
         self.metadata[unique_id] = {
@@ -422,7 +436,9 @@ class SimplifiedReplayBuffer:
         self._initialize_faiss()
         
         for i, (embedding, item) in enumerate(zip(self.stored_embeddings, self.image_storage)):
-            embedding_np = np.array(embedding).astype('float32').reshape(1, -1)
+            embedding_np = np.array(embedding).astype('float32')
+            if len(embedding_np.shape) == 1:
+                embedding_np = embedding_np.reshape(1, -1)
             if FAISS_AVAILABLE:
                 faiss.normalize_L2(embedding_np)
             self.faiss_index.add_with_ids(embedding_np, np.array([item['id']]))
