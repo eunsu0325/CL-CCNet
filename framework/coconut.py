@@ -371,7 +371,7 @@ class CoconutSystem:
         
         # Load dataset
         cfg_dataset = self.config.dataset
-        dataset = MyDataset(txt=str(cfg_dataset.dataset_path), train=False)
+        dataset = MyDataset(txt=str(cfg_dataset.train_set_file), train=False)
         
         # Group data by label
         grouped_data = self._group_data_by_label(dataset)

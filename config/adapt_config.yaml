@@ -24,7 +24,7 @@ Dataset:
   dataset_path: null
 
 # Model Configuration
-palm_recognizer:
+PalmRecognizer:
   architecture: "CCNet"
   num_classes: 600
   com_weight: 0.8
@@ -73,18 +73,12 @@ ReplayBuffer:
   use_faiss: true
 
 # Loss Configuration
-loss:
+Loss:
   temp: 0.07
   type: "SupConLoss"
-  
-  # 🔥 Online learning weights
-  online_learning:
-    enable_mahalanobis: false  # 마할라노비스 비활성화
-    supcon_weight: 1.0
-    mahal_weight: 0.0  # 사용 안 함
 
 # Model Saving Configuration
-model_saving:
+Model_saving:
   final_save_path: "/content/drive/MyDrive/CL-CCNet_nodemode/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
@@ -102,7 +96,7 @@ DataAugmentation:
   enable_noise: false
 
 # User Node Configuration
-user_node:
+User_node:
   enable_user_nodes: true
   node_save_path: "/content/drive/MyDrive/CL-CCNet_nodemode/results/user_nodes"
   collision_threshold: 0.3  # 각도 거리 기준 (0~1)
@@ -113,13 +107,13 @@ user_node:
   enable_compression: false
 
 # Loop Closure Configuration
-loop_closure:
+Loop_closure:
   enabled: true
   retraining_epochs: 5
   priority_weight: 2.0
 
 # Experiment Settings
-experiment:
+Experiment:
   seed: 42
   device: "cuda"
   num_workers: 4

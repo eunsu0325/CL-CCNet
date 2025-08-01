@@ -55,8 +55,8 @@ class ReplayBufferConfig:
     enable_smart_sampling: Optional[bool] = True
     diversity_update_frequency: Optional[int] = 10
     model_save_path: Optional[str] = "./results/models/"
-    
-    # 🔥 NEW: 단순화된 설정
+    min_samples_new_user: Optional[int] = 2
+    use_faiss: Optional[bool] = True  # Faiss 사용 여부
     samples_per_user_limit: Optional[int] = 3    # 사용자당 최대 저장 수
     
     def __post_init__(self):
@@ -78,24 +78,11 @@ class LossConfig:
     
     # 🔥 온라인 학습 설정 (새로 추가)
     online_learning: Optional[Dict] = None
-    
+
     def __post_init__(self):
-        if self.online_learning is None:
-            self.online_learning = {
-                'enable_mahalanobis': True,
-                'supcon_weight': 1.0,
-                'mahal_weight': 0.2,
-                'alternate_training': True
-            }
-        
-        print(f"[Config] 📊 Loss Configuration:")
-        print(f"   Base: {self.type} (temp={self.temp})")
-        if self.online_learning:
-            print(f"   Online Learning:")
-            print(f"     Mahalanobis: {'ON' if self.online_learning['enable_mahalanobis'] else 'OFF'}")
-            print(f"     Weights: SupCon={self.online_learning['supcon_weight']}, "
-                  f"Mahal={self.online_learning['mahal_weight']}")
-            print(f"     Alternate: {self.online_learning['alternate_training']}")
+      print(f"[Config] 📊 Loss Configuration:")
+      print(f"   Base: {self.type} (temp={self.temp})")
+      print(f"   Weight: SupCon only (1.0)")
 
 @dataclasses.dataclass
 class UserNodeConfig:
@@ -107,18 +94,12 @@ class UserNodeConfig:
     use_faiss_index: bool = True
     max_samples_per_user: int = 10
     
-    # PQ 압축 설정
-    enable_compression: bool = False
-    pq_nbits: int = 8
-    pq_nsegments: int = 32
-    
     def __post_init__(self):
         print(f"[Config] 🎯 User Node System:")
         print(f"   Enabled: {self.enable_user_nodes}")
         if self.enable_user_nodes:
             print(f"   Collision threshold: {self.collision_threshold}")
             print(f"   Max samples per user: {self.max_samples_per_user}")
-            print(f"   Compression: {'ON' if self.enable_compression else 'OFF'}")
 
 @dataclasses.dataclass
 class LoopClosureConfig:
