@@ -5,7 +5,6 @@ COCONUT Stage 2: User Node Based Online Adaptation Execution Script
 DESIGN PHILOSOPHY:
 - User Node based continual learning
 - Loop Closure self-correction
-- Mahalanobis distance authentication
 - Comprehensive evaluation with ablation support
 """
 
@@ -164,8 +163,7 @@ def ablation_study(config_path, args):
     1. Baseline (User Node OFF)
     2. +UserNode (Loop Closure OFF)
     3. +LoopClosure
-    4. +Mahalanobis
-    5. Full System
+    4. Full System
     """
     print("\n" + "="*80)
     print("📊 ABLATION STUDY")
@@ -193,12 +191,6 @@ def ablation_study(config_path, args):
             'loop_closure': True,
             'mahalanobis': False
         },
-        {
-            'name': '+Mahalanobis',
-            'user_node': True,
-            'loop_closure': True,
-            'mahalanobis': True
-        }
     ]
     
     results = {}
@@ -211,8 +203,6 @@ def ablation_study(config_path, args):
             base_config.user_node.enable_user_nodes = ablation_config['user_node']
         if hasattr(base_config, 'loop_closure'):
             base_config.loop_closure.enabled = ablation_config['loop_closure']
-        if hasattr(base_config, 'loss') and hasattr(base_config.loss, 'online_learning'):
-            base_config.loss.online_learning['enable_mahalanobis'] = ablation_config['mahalanobis']
         
         # 시스템 생성 및 실행
         system = CoconutSystem(base_config)
