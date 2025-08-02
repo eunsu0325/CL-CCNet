@@ -45,24 +45,24 @@ PalmRecognizer:
 # =================================================================
 ContinualLearner:
   adaptation: true
-  adaptation_epochs: 3  # Per batch
+  adaptation_epochs: 5  # Per batch
   sync_frequency: 10
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
-  learning_rate: 0.0001
+  learning_rate: 0.001
   
   # 🔥 BATCH CONFIGURATION
-  training_batch_size: 40  # Total batch size for training
-  hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
+  training_batch_size: 128  # Total batch size for training
+  hard_negative_ratio: 0.4  # 30% of buffer samples are hard negatives
 
 # =================================================================
 # REPLAY BUFFER CONFIGURATION
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
-  max_buffer_size: 400
-  similarity_threshold: 0.85
+  max_buffer_size: 500
+  similarity_threshold: 0.90
   storage_path: "/content/drive/MyDrive/CL-CCNet_nodemode/results/replay_buffer/"  # 구글 드라이브로 변경
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
