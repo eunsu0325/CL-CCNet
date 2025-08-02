@@ -1,10 +1,10 @@
-# evaluation/evaluator.py - 통합된 평가 시스템
+# evaluation/eval_utils.py - CCNet 스타일로 수정된 버전
 """
 CoCoNut Unified Evaluation System
 
 모든 평가 관련 기능을 하나로 통합:
 - 기본 성능 평가 (Rank-1, EER)
-- CCNet 스타일 인증
+- CCNet 스타일 인증 (두 이미지 활용)
 - End-to-End 평가
 - 시각화 및 리포트 생성
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 import json
 import time
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -30,11 +30,11 @@ from torch.utils.data import DataLoader
 
 class CoconutEvaluator:
     """
-    CoCoNut 통합 평가 시스템
+    CoCoNut 통합 평가 시스템 - CCNet 스타일
     
     Features:
     - 기본 성능 평가 (Rank-1, EER)
-    - CCNet 스타일 인증
+    - CCNet 스타일 인증 (두 이미지 페어 활용)
     - End-to-End 평가
     - 시각화 및 리포트 생성
     """
@@ -52,7 +52,7 @@ class CoconutEvaluator:
         
         # CCNet 스타일 인증 설정
         self.distance_threshold = 0.5  # 초기값
-        self.feature_dim = 128 if model.headless_mode else 2048
+        self.feature_dim = 128 if hasattr(model, 'headless_mode') and model.headless_mode else 2048
         
         # 통계
         self.stats = {
@@ -62,8 +62,8 @@ class CoconutEvaluator:
             'false_rejects': 0
         }
         
-        print(f"[Evaluator] ✅ Initialized")
-        print(f"[Evaluator] Model: {'Headless' if model.headless_mode else 'Classification'}")
+        print(f"[Evaluator] ✅ Initialized (CCNet Style)")
+        print(f"[Evaluator] Model type: {'Headless' if hasattr(model, 'headless_mode') and model.headless_mode else 'Classification'}")
         print(f"[Evaluator] Feature dim: {self.feature_dim}")
         if node_manager:
             print(f"[Evaluator] Registered users: {len(node_manager.nodes)}")
@@ -71,7 +71,7 @@ class CoconutEvaluator:
     # ==================== 기본 평가 함수들 ====================
     
     def extract_features(self, dataloader):
-        """데이터로더에서 모든 특징 벡터와 라벨을 추출"""
+        """데이터로더에서 모든 특징 벡터와 라벨을 추출 - CCNet 스타일"""
         self.model.eval()
         
         features_list = []
@@ -79,8 +79,16 @@ class CoconutEvaluator:
 
         with torch.no_grad():
             for datas, target in tqdm(dataloader, desc="Extracting features"):
-                data = datas[0].to(self.device)
-                codes = self.model.getFeatureCode(data)
+                # CCNet 스타일: 두 이미지 활용
+                data1 = datas[0].to(self.device)
+                data2 = datas[1].to(self.device) if len(datas) > 1 else data1
+                
+                # 두 이미지의 특징 추출
+                codes1 = self.model.getFeatureCode(data1)
+                codes2 = self.model.getFeatureCode(data2)
+                
+                # 평균 특징 사용 (더 robust)
+                codes = (codes1 + codes2) / 2
                 
                 features_list.append(codes.cpu().numpy())
                 labels_list.append(target.cpu().numpy())
@@ -88,13 +96,47 @@ class CoconutEvaluator:
         features = np.concatenate(features_list, axis=0)
         labels = np.concatenate(labels_list, axis=0)
         
-        print(f"  Extracted {len(features)} features")
+        print(f"  Extracted {len(features)} features (using CCNet style averaging)")
         return features, labels
+
+    def extract_features_separate(self, dataloader):
+        """두 이미지를 각각 분리하여 특징 추출 (더 정확한 평가용)"""
+        self.model.eval()
+        
+        features1_list = []
+        features2_list = []
+        labels_list = []
+
+        with torch.no_grad():
+            for datas, target in tqdm(dataloader, desc="Extracting paired features"):
+                data1 = datas[0].to(self.device)
+                data2 = datas[1].to(self.device) if len(datas) > 1 else data1
+                
+                codes1 = self.model.getFeatureCode(data1)
+                codes2 = self.model.getFeatureCode(data2)
+                
+                features1_list.append(codes1.cpu().numpy())
+                features2_list.append(codes2.cpu().numpy())
+                labels_list.append(target.cpu().numpy())
+                
+        features1 = np.concatenate(features1_list, axis=0)
+        features2 = np.concatenate(features2_list, axis=0)
+        labels = np.concatenate(labels_list, axis=0)
+        
+        print(f"  Extracted {len(features1)} feature pairs")
+        return features1, features2, labels
 
     def calculate_scores(self, probe_features, gallery_features):
         """Probe와 Gallery 간의 모든 매칭 점수 계산"""
+        # L2 정규화
+        probe_features = probe_features / np.linalg.norm(probe_features, axis=1, keepdims=True)
+        gallery_features = gallery_features / np.linalg.norm(gallery_features, axis=1, keepdims=True)
+        
+        # 코사인 유사도
         cosine_similarity = np.dot(probe_features, gallery_features.T)
         cosine_similarity = np.clip(cosine_similarity, -1.0, 1.0)
+        
+        # 각도 거리로 변환
         distances = np.arccos(cosine_similarity) / np.pi
         
         return distances
@@ -133,7 +175,7 @@ class CoconutEvaluator:
             genuine_scores = genuine_scores - min_score
             imposter_scores = imposter_scores - min_score
         
-        # 라벨 생성
+        # 라벨 생성 (1: genuine, 0: imposter)
         labels = np.concatenate([np.ones_like(genuine_scores), np.zeros_like(imposter_scores)])
         scores = np.concatenate([genuine_scores, imposter_scores])
 
@@ -143,7 +185,7 @@ class CoconutEvaluator:
             
             # EER 계산
             eer = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
-            thresh = interp1d(fpr, thresholds)(-eer)
+            thresh = interp1d(fpr, thresholds)(eer)
             
         except Exception:
             # 대안 방법
@@ -158,10 +200,10 @@ class CoconutEvaluator:
         return eer * 100, thresh
 
     def perform_basic_evaluation(self, train_loader, test_loader):
-        """기본 성능 평가 (Rank-1, EER)"""
-        print("\n[Basic Evaluation] Starting...")
+        """기본 성능 평가 (Rank-1, EER) - CCNet 스타일"""
+        print("\n[Basic Evaluation] Starting (CCNet Style)...")
         
-        # 1. 특징 추출
+        # 1. 특징 추출 (두 이미지 평균 사용)
         gallery_features, gallery_labels = self.extract_features(train_loader)
         probe_features, probe_labels = self.extract_features(test_loader)
         
@@ -201,6 +243,10 @@ class CoconutEvaluator:
     
     def compute_ccnet_distance(self, feat1: torch.Tensor, feat2: torch.Tensor) -> float:
         """CCNet 스타일 코사인 거리 계산"""
+        # L2 정규화
+        feat1 = F.normalize(feat1, dim=0)
+        feat2 = F.normalize(feat2, dim=0)
+        
         # 코사인 유사도
         cosine_sim = torch.dot(feat1, feat2).item()
         
@@ -212,10 +258,16 @@ class CoconutEvaluator:
         
         return distance
     
-    def verify_user(self, probe_image: torch.Tensor, top_k: int = 10) -> Dict:
+    def verify_user(self, probe_image: torch.Tensor, gallery_image: Optional[torch.Tensor] = None, 
+                   top_k: int = 10) -> Dict:
         """
         사용자 인증 (CCNet 스타일)
         
+        Args:
+            probe_image: 프로브 이미지
+            gallery_image: 갤러리 이미지 (옵션, CCNet 스타일)
+            top_k: 상위 K개 결과
+            
         Returns:
             인증 결과 딕셔너리
         """
@@ -227,16 +279,29 @@ class CoconutEvaluator:
         
         start_time = time.time()
         
-        # 1. 프로브 이미지 특징 추출
+        # 1. 특징 추출
         self.model.eval()
         with torch.no_grad():
+            # 프로브 이미지
             if len(probe_image.shape) == 3:
                 probe_image = probe_image.unsqueeze(0)
             probe_image = probe_image.to(self.device)
             probe_feature = self.model.getFeatureCode(probe_image).squeeze(0)
+            
+            # CCNet 스타일: 갤러리 이미지도 있으면 평균 사용
+            if gallery_image is not None:
+                if len(gallery_image.shape) == 3:
+                    gallery_image = gallery_image.unsqueeze(0)
+                gallery_image = gallery_image.to(self.device)
+                gallery_feature = self.model.getFeatureCode(gallery_image).squeeze(0)
+                
+                # 두 특징의 평균 (더 robust)
+                combined_feature = (probe_feature + gallery_feature) / 2
+            else:
+                combined_feature = probe_feature
         
         # 2. 가장 가까운 사용자 찾기
-        top_candidates = self.node_manager.find_nearest_users(probe_feature, k=top_k)
+        top_candidates = self.node_manager.find_nearest_users(combined_feature, k=top_k)
         
         if not top_candidates:
             return {
@@ -254,7 +319,7 @@ class CoconutEvaluator:
             node = self.node_manager.get_node(user_id)
             
             if node and node.mean_embedding is not None:
-                distance = self.compute_ccnet_distance(probe_feature, node.mean_embedding)
+                distance = self.compute_ccnet_distance(combined_feature, node.mean_embedding)
                 precise_results.append((user_id, distance))
         
         # 거리 기준 정렬
@@ -283,12 +348,14 @@ class CoconutEvaluator:
             'confidence': confidence,
             'threshold': self.distance_threshold,
             'top_k_results': precise_results[:5],
-            'computation_time': time.time() - start_time
+            'computation_time': time.time() - start_time,
+            'used_gallery': gallery_image is not None
         }
     
-    def calibrate_threshold(self, calibration_data: List[Tuple[torch.Tensor, int]],
+    def calibrate_threshold(self, calibration_data: List[Union[Tuple[torch.Tensor, int], 
+                                                               Tuple[Tuple[torch.Tensor, torch.Tensor], int]]],
                           target_far: float = 0.01):
-        """임계값 자동 조정"""
+        """임계값 자동 조정 - CCNet 스타일 지원"""
         print(f"\n[Calibration] Starting threshold calibration...")
         print(f"  Target FAR: {target_far*100:.2f}%")
         
@@ -296,13 +363,18 @@ class CoconutEvaluator:
         all_labels = []  # 1: genuine, 0: imposter
         
         # 모든 쌍에 대해 거리 계산
-        for probe_img, probe_label in tqdm(calibration_data, desc="Calibrating"):
-            result = self.verify_user(probe_img)
+        for data_item, true_label in tqdm(calibration_data, desc="Calibrating"):
+            # CCNet 스타일: 튜플이면 두 이미지
+            if isinstance(data_item, tuple):
+                probe_img, gallery_img = data_item
+                result = self.verify_user(probe_img, gallery_img)
+            else:
+                result = self.verify_user(data_item)
             
             if 'top_k_results' in result:
                 for user_id, distance in result['top_k_results']:
                     all_distances.append(distance)
-                    all_labels.append(1 if user_id == probe_label else 0)
+                    all_labels.append(1 if user_id == true_label else 0)
         
         if not all_distances:
             print("  ⚠️ No distances calculated")
@@ -346,7 +418,8 @@ class CoconutEvaluator:
     def run_end_to_end_evaluation(self, test_file_path: str, 
                                  batch_size: int = 32,
                                  save_results: bool = True,
-                                 output_dir: str = "./evaluation_results") -> Dict:
+                                 output_dir: str = "./evaluation_results",
+                                 use_ccnet_style: bool = True) -> Dict:
         """
         End-to-End 인증 평가
         
@@ -355,12 +428,14 @@ class CoconutEvaluator:
             batch_size: 배치 크기
             save_results: 결과 저장 여부
             output_dir: 결과 저장 경로
+            use_ccnet_style: CCNet 스타일 (두 이미지) 사용 여부
             
         Returns:
             종합 평가 결과
         """
         print("\n" + "="*80)
         print("🔍 END-TO-END AUTHENTICATION EVALUATION")
+        print(f"   Mode: {'CCNet Style (2 images)' if use_ccnet_style else 'Single Image'}")
         print("="*80)
         
         start_time = time.time()
@@ -368,7 +443,7 @@ class CoconutEvaluator:
         # 1. 테스트 데이터 로드
         print("\n[Step 1/5] Loading test data...")
         test_dataset = MyDataset(txt=test_file_path, train=False)
-        test_samples, test_labels = self._prepare_test_data(test_dataset)
+        test_samples, test_labels = self._prepare_test_data(test_dataset, use_ccnet_style)
         
         # 2. 임계값 캘리브레이션
         if len(test_samples) > 500:
@@ -381,7 +456,7 @@ class CoconutEvaluator:
         
         # 3. 전체 테스트셋 평가
         print("\n[Step 3/5] Evaluating full test set...")
-        eval_results = self._evaluate_test_set(test_samples, test_labels)
+        eval_results = self._evaluate_test_set(test_samples, test_labels, use_ccnet_style)
         
         # 4. 상세 분석
         print("\n[Step 4/5] Analyzing results...")
@@ -406,7 +481,8 @@ class CoconutEvaluator:
             'avg_verification_time_ms': analysis_results['avg_time_ms'],
             'total_evaluation_time': total_time,
             'calibration_result': calibration_result,
-            'threshold_used': self.distance_threshold
+            'threshold_used': self.distance_threshold,
+            'evaluation_mode': 'CCNet Style' if use_ccnet_style else 'Single Image'
         }
         
         # 결과 출력
@@ -414,25 +490,32 @@ class CoconutEvaluator:
         
         return summary
     
-    def _prepare_test_data(self, test_dataset) -> Tuple[List[torch.Tensor], List[int]]:
-        """테스트 데이터 준비"""
+    def _prepare_test_data(self, test_dataset, use_ccnet_style: bool = True) -> Tuple[List, List[int]]:
+        """테스트 데이터 준비 - CCNet 스타일 옵션"""
         test_samples = []
         test_labels = []
         
         for idx in tqdm(range(len(test_dataset)), desc="Loading test data"):
             data, label = test_dataset[idx]
-            # 첫 번째 이미지만 사용
-            test_samples.append(data[0])
+            
+            if use_ccnet_style and len(data) >= 2:
+                # CCNet 스타일: 두 이미지를 튜플로
+                test_samples.append((data[0], data[1]))
+            else:
+                # 단일 이미지
+                test_samples.append(data[0])
+                
             test_labels.append(label if isinstance(label, int) else label.item())
         
         print(f"  Loaded {len(test_samples)} test samples")
+        print(f"  Using {'image pairs' if use_ccnet_style else 'single images'}")
         print(f"  Unique users in test set: {len(set(test_labels))}")
         
         return test_samples, test_labels
     
-    def _evaluate_test_set(self, test_samples: List[torch.Tensor], 
-                          test_labels: List[int]) -> List[Dict]:
-        """전체 테스트셋 평가"""
+    def _evaluate_test_set(self, test_samples: List, test_labels: List[int], 
+                          use_ccnet_style: bool = True) -> List[Dict]:
+        """전체 테스트셋 평가 - CCNet 스타일 지원"""
         all_results = []
         registered_users = set(self.node_manager.nodes.keys()) if self.node_manager else set()
         
@@ -440,7 +523,12 @@ class CoconutEvaluator:
                                      total=len(test_samples),
                                      desc="Evaluating"):
             # 인증 수행
-            auth_result = self.verify_user(sample)
+            if use_ccnet_style and isinstance(sample, tuple):
+                # CCNet 스타일: 두 이미지 사용
+                auth_result = self.verify_user(sample[0], sample[1])
+            else:
+                # 단일 이미지
+                auth_result = self.verify_user(sample)
             
             # 결과 저장
             result_entry = {
@@ -451,7 +539,8 @@ class CoconutEvaluator:
                 'distance': auth_result.get('distance', 1.0),
                 'confidence': auth_result.get('confidence', 0.0),
                 'top_5_results': auth_result.get('top_k_results', [])[:5],
-                'computation_time': auth_result.get('computation_time', 0)
+                'computation_time': auth_result.get('computation_time', 0),
+                'used_ccnet_style': auth_result.get('used_gallery', False)
             }
             all_results.append(result_entry)
         
@@ -470,9 +559,13 @@ class CoconutEvaluator:
         
         rank_correct = {r: 0 for r in range(1, 6)}
         computation_times = []
+        ccnet_style_count = 0
         
         for result in eval_results:
             computation_times.append(result['computation_time'])
+            
+            if result.get('used_ccnet_style', False):
+                ccnet_style_count += 1
             
             if result['is_registered']:
                 # 등록된 사용자
@@ -547,7 +640,8 @@ class CoconutEvaluator:
             'rank_accuracies': rank_accuracies,
             'avg_time_ms': avg_time_ms,
             'min_time_ms': np.min(computation_times) * 1000 if computation_times else 0,
-            'max_time_ms': np.max(computation_times) * 1000 if computation_times else 0
+            'max_time_ms': np.max(computation_times) * 1000 if computation_times else 0,
+            'ccnet_style_usage': (ccnet_style_count / total * 100) if total > 0 else 0
         }
     
     # ==================== 시각화 및 리포트 ====================
@@ -565,7 +659,8 @@ class CoconutEvaluator:
             'timestamp': timestamp,
             'analysis': analysis,
             'threshold_used': self.distance_threshold,
-            'node_manager_stats': self.node_manager.get_statistics() if self.node_manager else None
+            'node_manager_stats': self.node_manager.get_statistics() if self.node_manager else None,
+            'evaluation_mode': 'CCNet Style' if analysis.get('ccnet_style_usage', 0) > 0 else 'Single Image'
         }
         
         with open(output_path / f'evaluation_summary_{timestamp}.json', 'w') as f:
@@ -579,7 +674,7 @@ class CoconutEvaluator:
     def _create_visualizations(self, analysis: Dict, 
                               output_path: Path, timestamp: str):
         """결과 시각화"""
-        plt.style.use('seaborn-v0_8-darkgrid')
+        plt.style.use('default')  # seaborn-v0_8-darkgrid 대신 default 사용
         
         # 1. 거리 분포 히스토그램
         plt.figure(figsize=(12, 6))
@@ -600,7 +695,8 @@ class CoconutEvaluator:
         
         plt.xlabel('Distance')
         plt.ylabel('Density')
-        plt.title('Distance Distribution')
+        plt.title('Distance Distribution (CCNet Style)' if analysis.get('ccnet_style_usage', 0) > 50 
+                  else 'Distance Distribution')
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -629,7 +725,8 @@ class CoconutEvaluator:
             
             plt.xlabel('False Acceptance Rate (%)')
             plt.ylabel('Genuine Acceptance Rate (%)')
-            plt.title('ROC Curve')
+            plt.title('ROC Curve (CCNet Style)' if analysis.get('ccnet_style_usage', 0) > 50 
+                      else 'ROC Curve')
             plt.legend()
             plt.grid(True, alpha=0.3)
             plt.xlim([0, 20])
@@ -653,7 +750,8 @@ class CoconutEvaluator:
             
             plt.xlabel('Rank')
             plt.ylabel('Accuracy (%)')
-            plt.title('Rank-N Accuracy')
+            plt.title('Rank-N Accuracy (CCNet Style)' if analysis.get('ccnet_style_usage', 0) > 50 
+                      else 'Rank-N Accuracy')
             plt.ylim([0, 105])
             plt.grid(True, axis='y', alpha=0.3)
             plt.tight_layout()
@@ -670,6 +768,7 @@ class CoconutEvaluator:
         print(f"  - Test samples: {summary['test_samples']}")
         print(f"  - Registered users: {summary['registered_users']}")
         print(f"  - Distance threshold: {summary['threshold_used']:.4f}")
+        print(f"  - Evaluation mode: {summary.get('evaluation_mode', 'Unknown')}")
         
         print(f"\n📈 Performance Metrics:")
         print(f"  - Overall Accuracy: {summary['accuracy']:.2f}%")
@@ -702,5 +801,11 @@ def run_end_to_end_evaluation(model, node_manager, config):
     return evaluator.run_end_to_end_evaluation(
         test_file_path=test_file,
         save_results=True,
-        output_dir="./evaluation_results"
+        output_dir="./evaluation_results",
+        use_ccnet_style=True  # CCNet 스타일 사용
     )
+
+# 테스트 코드
+if __name__ == "__main__":
+    print("CCNet Style Evaluation Module Test")
+    print("This module supports both single image and CCNet-style (2 images) evaluation")

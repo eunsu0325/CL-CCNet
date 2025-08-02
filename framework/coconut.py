@@ -1,13 +1,13 @@
-# framework/coconut.py - 정리된 버전 (이미지 변환 오류 수정)
+# framework/coconut.py - CCNet 스타일로 수정된 버전
 
 """
 === COCONUT STAGE 2: CONTINUAL LEARNING ===
 
-🔥 SIMPLIFIED VERSION:
-- SupCon loss only
+🔥 CCNet Style Implementation:
+- Use both images from dataset pairs
+- SupCon loss with proper multi-view format
 - User Node system maintained
-- Clean and simple naming
-- Fixed image conversion for User Nodes
+- Fixed NaN issues
 """
 
 import torch
@@ -35,15 +35,15 @@ from torch.utils.data import DataLoader
 class CoconutSystem:
     def __init__(self, config):
         """
-        배치 기반 CoCoNut 연속학습 시스템
+        배치 기반 CoCoNut 연속학습 시스템 - CCNet 스타일
         
         DESIGN:
-        - SupCon loss only
+        - SupCon loss with proper 2-view format
         - User Node based authentication
-        - Simplified training process
+        - Even-count buffer management
         """
         print("="*80)
-        print("🥥 COCONUT: CONTINUAL LEARNING")
+        print("🥥 COCONUT: CONTINUAL LEARNING (CCNet Style)")
         print("="*80)
         
         self.config = config
@@ -59,7 +59,7 @@ class CoconutSystem:
         cfg_learner = self.config.continual_learner
         self.training_batch_size = getattr(cfg_learner, 'training_batch_size', 32)
         self.hard_negative_ratio = getattr(cfg_learner, 'hard_negative_ratio', 0.3)
-        self.samples_per_label = getattr(self.config.dataset, 'samples_per_label', 5)
+        self.samples_per_label = getattr(self.config.dataset, 'samples_per_label', 10)
         
         # User Node configuration
         self.user_node_config = getattr(config, 'user_node', None)
@@ -71,11 +71,11 @@ class CoconutSystem:
         print(f"   Hard negative ratio: {self.hard_negative_ratio:.1%}")
         print(f"   Mode: {'Headless' if self.headless_mode else 'Classification'}")
         print(f"   🎯 User Nodes: {'ENABLED' if self.user_nodes_enabled else 'DISABLED'}")
-        print(f"   📊 Loss: SupCon only")
+        print(f"   📊 Loss: SupCon (CCNet style)")
         print("="*80)
         
         # Checkpoint directory
-        self.checkpoint_dir = Path('/content/drive/MyDrive/CoCoNut_Simplified/checkpoints')
+        self.checkpoint_dir = Path('/content/drive/MyDrive/CL-CCNet_nodemode/checkpoints')
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize components
@@ -179,11 +179,11 @@ class CoconutSystem:
             lr=cfg_model.learning_rate
         )
         
-        # 손실 함수 (SupCon만)
+        # 손실 함수 (SupCon)
         self.criterion = create_coconut_loss(cfg_loss.__dict__)
         
         print(f"[System] ✅ Optimizer initialized (lr: {cfg_model.learning_rate})")
-        print(f"[System] ✅ Loss: SupCon only")
+        print(f"[System] ✅ Loss: SupCon (CCNet style)")
 
     def _initialize_user_node_system(self):
         """사용자 노드 시스템 초기화"""
@@ -192,7 +192,7 @@ class CoconutSystem:
             
             # UserNodeManager 생성
             node_config = self.user_node_config.__dict__.copy()
-            node_config.pop('config_file', None)  # config_file 제거
+            node_config.pop('config_file', None)
             
             self.node_manager = UserNodeManager(
                 config=node_config,
@@ -205,90 +205,84 @@ class CoconutSystem:
             print("[System] ⚠️ User Node system is DISABLED")
 
     def _prepare_registration_image(self, sample_tensor):
-        """🔥 등록 이미지 준비 (안전한 변환)"""
+        """등록 이미지 준비"""
         try:
             # 텐서를 numpy로 변환
             image_np = sample_tensor.cpu().numpy()
-            
-            print(f"[System] Original image shape: {image_np.shape}")
-            print(f"[System] Original image dtype: {image_np.dtype}")
-            print(f"[System] Original image range: [{image_np.min():.3f}, {image_np.max():.3f}]")
             
             # 형태 확인 및 변환
             if len(image_np.shape) == 3:
                 # (C, H, W) -> (H, W, C)
                 if image_np.shape[0] in [1, 3]:
                     image_np = image_np.transpose(1, 2, 0)
-                    print(f"[System] Transposed to: {image_np.shape}")
             
             # 값 범위 정규화 (0-1 -> 0-255)
             if image_np.dtype in [np.float32, np.float64]:
                 if image_np.max() <= 1.0:
                     image_np = (image_np * 255).astype(np.uint8)
-                    print(f"[System] Normalized 0-1 to 0-255")
                 else:
                     image_np = image_np.astype(np.uint8)
-                    print(f"[System] Converted to uint8")
             
-            # 그레이스케일 처리 (3차원에서 마지막 차원이 1인 경우)
+            # 그레이스케일 처리
             if len(image_np.shape) == 3 and image_np.shape[2] == 1:
                 image_np = image_np.squeeze(2)
-                print(f"[System] Squeezed to grayscale: {image_np.shape}")
-            
-            print(f"[System] Final image shape: {image_np.shape}")
-            print(f"[System] Final image dtype: {image_np.dtype}")
-            print(f"[System] Final image range: [{image_np.min()}, {image_np.max()}]")
             
             return image_np
             
         except Exception as e:
             print(f"[System] ❌ Error preparing registration image: {e}")
-            print(f"[System] Input shape: {sample_tensor.shape}")
-            print(f"[System] Input type: {type(sample_tensor)}")
             # 더미 이미지 생성
             dummy_image = np.full((128, 128), 128, dtype=np.uint8)
-            print(f"[System] 🔧 Using dummy image: {dummy_image.shape}")
             return dummy_image
 
-    def process_label_batch(self, samples: List[torch.Tensor], user_id: int):
+    def process_label_batch(self, sample_pairs: List[Tuple[torch.Tensor, torch.Tensor]], user_id: int):
         """
-        배치 단위 처리
+        배치 단위 처리 - CCNet 스타일
         
         Args:
-            samples: 한 라벨의 모든 샘플들
+            sample_pairs: [(img1, img2), ...] 형태의 이미지 페어 리스트
             user_id: 사용자 ID
         """
-        print(f"\n[Process] 🎯 Processing batch for User {user_id} ({len(samples)} samples)")
+        print(f"\n[Process] 🎯 Processing batch for User {user_id} ({len(sample_pairs)} pairs)")
         
         # 1. 훈련 배치 구성
         training_batch = self._construct_training_batch(
-            new_samples=samples,
-            new_embeddings=None,
-            new_user_id=user_id
+            sample_pairs=sample_pairs,
+            user_id=user_id
         )
         
-        # 2. 학습 수행 (SupCon만)
+        # 2. 학습 수행
         adaptation_epochs = self.config.continual_learner.adaptation_epochs
         
         for epoch in range(adaptation_epochs):
             print(f"[Epoch {epoch+1}/{adaptation_epochs}]")
+            loss_dict = self._train_step_ccnet_style(training_batch)
             
-            # SupConLoss만 사용
-            loss_dict = self._train_step(training_batch)
+            # NaN 체크
+            if torch.isnan(torch.tensor(loss_dict['total'])):
+                print(f"   ⚠️ NaN detected! Skipping this batch.")
+                return {'stored': 0, 'total': len(sample_pairs)}
+            
             print(f"   Loss: {loss_dict['total']:.4f}")
         
         # 3. 사용자 노드 생성/업데이트
         if self.user_nodes_enabled and self.node_manager:
-            final_embeddings = self._extract_batch_features(samples)
+            # 모든 이미지의 특징 추출
+            all_embeddings = []
+            for img1, img2 in sample_pairs:
+                emb1 = self._extract_feature(img1)
+                emb2 = self._extract_feature(img2)
+                all_embeddings.extend([emb1, emb2])
             
-            # 🔥 안전한 이미지 변환
-            registration_image = self._prepare_registration_image(samples[0])
+            final_embeddings = torch.stack(all_embeddings)  # [20, feature_dim]
+            
+            # 대표 이미지
+            registration_image = self._prepare_registration_image(sample_pairs[0][0])
             
             self.node_manager.add_user(user_id, final_embeddings, registration_image)
         
-        # 4. 선별적 버퍼 저장
-        batch_embeddings = self._extract_batch_features(samples)
-        stored_count = self._selective_buffer_storage(samples, batch_embeddings, user_id)
+        # 4. 선별적 버퍼 저장 (짝수 유지)
+        stored_count = self._store_to_buffer_even(sample_pairs, user_id)
         
         # 5. 통계 업데이트
         self.global_step += 1
@@ -298,88 +292,186 @@ class CoconutSystem:
         if self.global_step % self.config.continual_learner.sync_frequency == 0:
             self._sync_weights()
         
-        print(f"[Process] ✅ Completed: stored={stored_count}/{len(samples)}")
+        print(f"[Process] ✅ Completed: stored={stored_count}/{len(sample_pairs)*2}")
         
         return {
             'stored': stored_count,
-            'total': len(samples)
+            'total': len(sample_pairs) * 2
         }
 
-    def _train_step(self, batch_data: Dict) -> Dict[str, torch.Tensor]:
-        """한 스텝 학습"""
-        images = batch_data['images']
-        labels = batch_data['labels']
+    def _train_step_ccnet_style(self, batch_data: Dict) -> Dict[str, torch.Tensor]:
+        """CCNet 스타일 학습 스텝"""
+        sample_pairs = batch_data['sample_pairs']  # [(img1, img2), ...]
+        buffer_samples = batch_data['buffer_samples']  # [(img, label), ...]
         
-        if not images:
+        if not sample_pairs and not buffer_samples:
             return {'total': 0.0, 'supcon': 0.0}
         
         self.learner_net.train()
         self.optimizer.zero_grad()
         
-        # Extract features
-        embeddings = []
-        for img in images:
-            img_tensor = img.to(self.device)
-            if len(img_tensor.shape) == 3:
-                img_tensor = img_tensor.unsqueeze(0)
+        # CCNet 스타일로 특징 추출
+        features_list = []
+        labels_list = []
+        
+        # 1. 새 사용자의 페어들 처리
+        for (img1, img2), label in sample_pairs:
+            # 각 이미지에서 특징 추출
+            img1_tensor = img1.to(self.device)
+            img2_tensor = img2.to(self.device)
             
-            if self.headless_mode:
-                _, embedding = self.learner_net(img_tensor)
-            else:
-                _, embedding = self.learner_net(img_tensor)
+            if len(img1_tensor.shape) == 3:
+                img1_tensor = img1_tensor.unsqueeze(0)
+            if len(img2_tensor.shape) == 3:
+                img2_tensor = img2_tensor.unsqueeze(0)
             
-            embeddings.append(embedding)
+            _, feat1 = self.learner_net(img1_tensor)
+            _, feat2 = self.learner_net(img2_tensor)
+            
+            # [2, feature_dim] 형태로 묶기
+            paired_features = torch.stack([feat1.squeeze(0), feat2.squeeze(0)], dim=0)
+            features_list.append(paired_features)
+            labels_list.append(label)
         
-        embeddings_tensor = torch.cat(embeddings, dim=0)
-        labels_tensor = torch.tensor(labels, dtype=torch.long, device=self.device)
+        # 2. 버퍼 샘플들을 라벨별로 그룹화하여 페어 만들기
+        if buffer_samples:
+            label_groups = defaultdict(list)
+            for img, lbl in buffer_samples:
+                label_groups[lbl].append(img)
+            
+            # 각 라벨에서 짝수개씩 선택하여 페어 구성
+            for lbl, imgs in label_groups.items():
+                # 짝수개로 만들기
+                num_imgs = len(imgs)
+                if num_imgs >= 2:
+                    # 짝수개만 사용
+                    for i in range(0, num_imgs - 1, 2):
+                        img1_tensor = imgs[i].to(self.device)
+                        img2_tensor = imgs[i+1].to(self.device)
+                        
+                        if len(img1_tensor.shape) == 3:
+                            img1_tensor = img1_tensor.unsqueeze(0)
+                        if len(img2_tensor.shape) == 3:
+                            img2_tensor = img2_tensor.unsqueeze(0)
+                        
+                        _, feat1 = self.learner_net(img1_tensor)
+                        _, feat2 = self.learner_net(img2_tensor)
+                        
+                        paired_features = torch.stack([feat1.squeeze(0), feat2.squeeze(0)], dim=0)
+                        features_list.append(paired_features)
+                        labels_list.append(lbl)
         
-        # 손실 (SupCon만)
-        loss_dict = self.criterion(embeddings_tensor, labels_tensor)
+        if not features_list:
+            return {'total': 0.0, 'supcon': 0.0}
         
-        # Backward
+        # [batch_size, 2, feature_dim] 형태로 스택
+        features_tensor = torch.stack(features_list)
+        labels_tensor = torch.tensor(labels_list, dtype=torch.long, device=self.device)
+        
+        print(f"[Train] Batch shape: {features_tensor.shape}, Labels: {labels_tensor.shape}")
+        
+        # SupCon Loss 계산
+        loss_dict = self.criterion(features_tensor, labels_tensor)
+        
+        # Backward with gradient clipping
         loss_dict['total'].backward()
+        torch.nn.utils.clip_grad_norm_(self.learner_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
-    def _construct_training_batch(self, new_samples: List[torch.Tensor], 
-                                 new_embeddings: torch.Tensor, 
-                                 new_user_id: int) -> Dict:
-        """학습용 배치 구성"""
+    def _construct_training_batch(self, sample_pairs: List[Tuple], user_id: int) -> Dict:
+        """CCNet 스타일 배치 구성"""
         
-        # Calculate how many samples we need from buffer
-        buffer_samples_needed = max(0, self.training_batch_size - len(new_samples))
+        # 새 사용자의 페어들
+        new_pairs = [(pair, user_id) for pair in sample_pairs]
+        
+        # 버퍼에서 샘플 가져오기
+        # 목표: 전체 배치가 적절한 크기가 되도록
+        num_new_samples = len(sample_pairs) * 2  # 각 페어는 2개 이미지
+        buffer_samples_needed = max(0, self.training_batch_size - num_new_samples)
+        
+        # 짝수로 맞추기 (페어를 만들기 위해)
+        if buffer_samples_needed % 2 == 1:
+            buffer_samples_needed += 1
         
         print(f"[Batch] Constructing training batch:")
-        print(f"   New samples: {len(new_samples)}")
+        print(f"   New pairs: {len(sample_pairs)} ({num_new_samples} images)")
         print(f"   Buffer samples needed: {buffer_samples_needed}")
         
-        # Get samples from replay buffer
+        buffer_samples = []
         if buffer_samples_needed > 0:
-            if new_embeddings is None:
-                new_embeddings = self._extract_batch_features(new_samples)
-                
-            buffer_images, buffer_labels = self.replay_buffer.sample_for_training(
+            buffer_images, buffer_labels = self.replay_buffer.sample_for_training_even(
                 num_samples=buffer_samples_needed,
-                current_embeddings=new_embeddings.cpu().split(1),  # Convert to list
-                current_user_id=new_user_id
+                current_user_id=user_id
             )
-        else:
-            buffer_images, buffer_labels = [], []
+            
+            buffer_samples = list(zip(buffer_images, buffer_labels))
+            print(f"   Buffer samples retrieved: {len(buffer_samples)}")
         
-        # Combine all samples
-        all_images = new_samples + buffer_images
-        all_labels = [new_user_id] * len(new_samples) + buffer_labels
-        
-        print(f"[Batch] Final composition: {len(all_images)} samples")
+        print(f"[Batch] Final composition: {len(new_pairs)} pairs + {len(buffer_samples)} buffer samples")
         
         return {
-            'images': all_images,
-            'labels': all_labels
+            'sample_pairs': new_pairs,
+            'buffer_samples': buffer_samples
         }
 
+    def _store_to_buffer_even(self, sample_pairs: List[Tuple], user_id: int) -> int:
+        """버퍼에 짝수개로 저장"""
+        stored_count = 0
+        user_embeddings = []
+        user_images = []
+        
+        # 모든 이미지와 임베딩 수집
+        for img1, img2 in sample_pairs:
+            emb1 = self._extract_feature(img1)
+            emb2 = self._extract_feature(img2)
+            
+            user_embeddings.extend([emb1, emb2])
+            user_images.extend([img1, img2])
+        
+        # 다양성 점수 계산
+        diversity_scores = []
+        for i, (img, emb) in enumerate(zip(user_images, user_embeddings)):
+            # 다른 임베딩들과의 평균 유사도
+            similarities = []
+            for j, other_emb in enumerate(user_embeddings):
+                if i != j:
+                    sim = F.cosine_similarity(emb.unsqueeze(0), other_emb.unsqueeze(0)).item()
+                    similarities.append(sim)
+            avg_sim = np.mean(similarities)
+            diversity_scores.append((i, avg_sim, img, emb))
+        
+        # 다양성이 높은 순으로 정렬 (유사도가 낮은 순)
+        diversity_scores.sort(key=lambda x: x[1])
+        
+        # 짝수개만 저장 (최대 samples_per_user_limit까지)
+        max_to_store = min(len(diversity_scores), self.replay_buffer.samples_per_user_limit)
+        if max_to_store % 2 == 1:
+            max_to_store -= 1  # 짝수로 만들기
+        
+        for i in range(max_to_store):
+            idx, sim, img, emb = diversity_scores[i]
+            if self.replay_buffer.add_sample_direct(img, user_id, emb):
+                stored_count += 1
+        
+        return stored_count
+
+    def _extract_feature(self, image: torch.Tensor) -> torch.Tensor:
+        """단일 이미지에서 특징 추출"""
+        self.learner_net.eval()
+        
+        with torch.no_grad():
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0)
+            image = image.to(self.device)
+            features = self.learner_net.getFeatureCode(image)
+        
+        self.learner_net.train()
+        return features.squeeze(0)
+
     def _extract_batch_features(self, samples: List[torch.Tensor]) -> torch.Tensor:
-        """배치 특징 추출 (GPU 효율적)"""
+        """배치 특징 추출"""
         self.learner_net.eval()
         
         with torch.no_grad():
@@ -392,18 +484,6 @@ class CoconutSystem:
         self.learner_net.train()
         return features
 
-    def _selective_buffer_storage(self, samples: List[torch.Tensor], 
-                                 embeddings: torch.Tensor, 
-                                 user_id: int) -> int:
-        """선별적 버퍼 저장"""
-        stored_count = 0
-        
-        for i, (sample, embedding) in enumerate(zip(samples, embeddings)):
-            if self.replay_buffer.add_if_diverse(sample, user_id, embedding):
-                stored_count += 1
-        
-        return stored_count
-
     def _sync_weights(self):
         """가중치 동기화"""
         self.predictor_net.load_state_dict(self.learner_net.state_dict())
@@ -412,12 +492,7 @@ class CoconutSystem:
         print(f"\n[Sync] 🔄 Weights synchronized at step {self.global_step}")
 
     def verify_user(self, probe_image: torch.Tensor, top_k: int = 10) -> Dict:
-        """
-        🔥 사용자 인증 (User Node 기반)
-        
-        Returns:
-            인증 결과 딕셔너리
-        """
+        """사용자 인증"""
         if not self.node_manager:
             return {
                 'is_match': False,
@@ -443,8 +518,8 @@ class CoconutSystem:
         return auth_result
 
     def run_experiment(self):
-        """배치 기반 실험 실행"""
-        print(f"\n[System] Starting batch-based continual learning...")
+        """배치 기반 실험 실행 - CCNet 스타일"""
+        print(f"\n[System] Starting CCNet-style continual learning...")
         
         # Load dataset
         cfg_dataset = self.config.dataset
@@ -456,6 +531,7 @@ class CoconutSystem:
         
         print(f"[System] Dataset loaded: {total_users} users")
         print(f"[System] Processing {self.samples_per_label} samples per user")
+        print(f"[System] Using 2 images per sample (CCNet style)")
         
         # Process each user's batch
         for user_id, user_indices in tqdm(grouped_data.items(), desc="Batch Processing"):
@@ -463,15 +539,16 @@ class CoconutSystem:
             if self.processed_users > 0 and user_id in self._get_processed_user_ids():
                 continue
             
-            # Get samples for this user
-            samples = []
+            # Get sample pairs for this user
+            sample_pairs = []
             for idx in user_indices[:self.samples_per_label]:
                 data, _ = dataset[idx]
-                samples.append(data[0])  # Use first image from pair
+                # Use both images from dataset
+                sample_pairs.append((data[0], data[1]))
             
-            if len(samples) == self.samples_per_label:
+            if len(sample_pairs) == self.samples_per_label:
                 # Process batch
-                results = self.process_label_batch(samples, user_id)
+                results = self.process_label_batch(sample_pairs, user_id)
                 
                 # Save checkpoint periodically
                 if self.global_step % self.config.continual_learner.intermediate_save_frequency == 0:
@@ -579,7 +656,7 @@ class CoconutSystem:
             'samples_per_label': self.samples_per_label,
             'headless_mode': self.headless_mode,
             'user_nodes_enabled': self.user_nodes_enabled,
-            'loss_type': 'SupCon only',
+            'loss_type': 'SupCon (CCNet style)',
             'buffer_stats': self.replay_buffer.get_statistics()
         }
         
@@ -612,7 +689,7 @@ class CoconutSystem:
             
             # 평가기 생성
             evaluator = CoconutEvaluator(
-                model=self.predictor_net,  # 동기화된 예측 모델 사용
+                model=self.predictor_net,
                 node_manager=self.node_manager,
                 device=self.device
             )

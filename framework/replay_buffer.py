@@ -1,4 +1,4 @@
-# framework/replay_buffer.py - 정리된 버전
+# framework/replay_buffer.py - CCNet 스타일로 수정된 버전
 
 """
 CoCoNut Replay Buffer with Loop Closure Support
@@ -7,6 +7,8 @@ CoCoNut Replay Buffer with Loop Closure Support
 - Priority queue for loop closure samples
 - User-specific sample retrieval
 - Enhanced sampling strategies
+- Even-count maintenance for SupConLoss
+- CCNet-style pair handling
 """
 
 import os
@@ -14,6 +16,7 @@ import pickle
 import random
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Set
+from collections import defaultdict
 
 try:
     import faiss
@@ -31,7 +34,7 @@ from PIL import Image
 
 class ReplayBuffer:
     def __init__(self, config, storage_dir: Path, feature_dimension: int = 128):
-        """리플레이 버퍼 with Loop Closure support"""
+        """리플레이 버퍼 with Loop Closure support + CCNet style"""
         self.config = config
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +43,8 @@ class ReplayBuffer:
         self.buffer_size = self.config.max_buffer_size
         self.similarity_threshold = self.config.similarity_threshold
         self.feature_dimension = feature_dimension
-        self.samples_per_user_limit = getattr(self.config, 'samples_per_user_limit', 3)
+        self.samples_per_user_limit = getattr(self.config, 'samples_per_user_limit', 4)  # 짝수로 설정
+        self.min_samples_new_user = getattr(self.config, 'min_samples_new_user', 2)     # 짝수로 설정
         
         # Faiss 인덱스 및 저장소
         self.image_storage = []
@@ -66,15 +70,16 @@ class ReplayBuffer:
         self.state_file = self.storage_dir / 'buffer_state.pkl'
         self._load_state()
         
-        print(f"[Buffer] 🥥 Replay Buffer initialized")
+        print(f"[Buffer] 🥥 Replay Buffer initialized (CCNet style)")
         print(f"[Buffer] Max size: {self.buffer_size}")
-        print(f"[Buffer] Per-user limit: {self.samples_per_user_limit}")
+        print(f"[Buffer] Per-user limit: {self.samples_per_user_limit} (even count)")
+        print(f"[Buffer] Min samples for new user: {self.min_samples_new_user}")
         print(f"[Buffer] Current size: {len(self.image_storage)}")
         print(f"[Buffer] 🔥 Loop Closure support: ENABLED")
 
     def add_if_diverse(self, image: torch.Tensor, user_id: int, embedding: torch.Tensor = None):
         """
-        다양성 기반 추가
+        다양성 기반 추가 - 짝수 유지 고려
         
         Args:
             image: 이미지
@@ -83,9 +88,10 @@ class ReplayBuffer:
         """
         # 사용자별 샘플 수 확인
         user_samples = [item for item in self.image_storage if item['user_id'] == user_id]
+        current_count = len(user_samples)
         
-        if len(user_samples) >= self.samples_per_user_limit:
-            print(f"[Buffer] User {user_id} already has {len(user_samples)} samples (limit: {self.samples_per_user_limit})")
+        if current_count >= self.samples_per_user_limit:
+            print(f"[Buffer] User {user_id} already has {current_count} samples (limit: {self.samples_per_user_limit})")
             return False
         
         # 임베딩 계산
@@ -93,8 +99,17 @@ class ReplayBuffer:
             with torch.no_grad():
                 embedding = self._extract_feature(image)
         
-        # 다양성 체크
-        if len(user_samples) > 0:
+        # 홀수인 경우 무조건 추가 (짝수로 만들기)
+        if current_count % 2 == 1:
+            # 버퍼 공간 확보
+            if len(self.image_storage) >= self.buffer_size:
+                self._remove_least_diverse_even()
+            
+            self._store_sample(image, user_id, embedding)
+            return True
+        
+        # 짝수인 경우 다양성 체크
+        if current_count > 0:
             max_similarity = self._compute_max_similarity_to_user(embedding, user_id)
             
             if max_similarity >= self.similarity_threshold:
@@ -103,7 +118,17 @@ class ReplayBuffer:
         
         # 버퍼 공간 확보
         if len(self.image_storage) >= self.buffer_size:
-            self._remove_least_diverse()
+            self._remove_least_diverse_even()
+        
+        # 저장
+        self._store_sample(image, user_id, embedding)
+        return True
+
+    def add_sample_direct(self, image: torch.Tensor, user_id: int, embedding: torch.Tensor):
+        """직접 샘플 추가 (다양성 체크 없이)"""
+        # 버퍼 공간 확보
+        if len(self.image_storage) >= self.buffer_size:
+            self._remove_least_diverse_even()
         
         # 저장
         self._store_sample(image, user_id, embedding)
@@ -172,6 +197,218 @@ class ReplayBuffer:
               f"{len(sampled_images) - len(self.priority_queue) - num_hard} random")
         
         return sampled_images, sampled_labels
+
+    def sample_for_training_even(self, num_samples: int, current_user_id: int) -> Tuple[List, List]:
+        """
+        학습을 위한 샘플링 - CCNet 스타일 (짝수 보장)
+        
+        Args:
+            num_samples: 요청된 샘플 수
+            current_user_id: 현재 사용자 ID (제외용)
+            
+        Returns:
+            (images, labels) - 짝수개 보장
+        """
+        if len(self.image_storage) == 0:
+            return [], []
+        
+        sampled_images = []
+        sampled_labels = []
+        used_indices = set()
+        
+        # 1. Priority Queue 처리
+        if self.priority_queue:
+            for priority_item in self.priority_queue[:num_samples]:
+                sampled_images.append(priority_item['image'])
+                sampled_labels.append(priority_item['user_id'])
+                
+            self.priority_queue = self.priority_queue[len(sampled_images):]
+            
+            if len(sampled_images) >= num_samples:
+                return self._ensure_even_count(sampled_images[:num_samples], 
+                                              sampled_labels[:num_samples])
+        
+        # 2. 라벨별 그룹화
+        label_groups = defaultdict(list)
+        for i, item in enumerate(self.image_storage):
+            if item['user_id'] != current_user_id:  # 현재 사용자 제외
+                label_groups[item['user_id']].append(i)
+        
+        # 3. 각 라벨에서 짝수개씩 샘플링
+        for user_id, indices in label_groups.items():
+            if len(sampled_images) >= num_samples:
+                break
+                
+            if len(indices) >= 2:
+                # 짝수개 선택
+                num_to_sample = min(len(indices) // 2 * 2, 4)  # 최대 4개
+                selected_indices = random.sample(indices, num_to_sample)
+                
+                for idx in selected_indices:
+                    if len(sampled_images) < num_samples:
+                        item = self.image_storage[idx]
+                        sampled_images.append(item['image'])
+                        sampled_labels.append(item['user_id'])
+                        used_indices.add(idx)
+        
+        # 4. 부족하면 추가 샘플링
+        remaining = num_samples - len(sampled_images)
+        if remaining > 0:
+            available_indices = [i for i in range(len(self.image_storage)) 
+                               if i not in used_indices and 
+                               self.image_storage[i]['user_id'] != current_user_id]
+            
+            if available_indices:
+                # 짝수개로 맞추기
+                if remaining % 2 == 1:
+                    remaining += 1
+                    
+                additional = random.sample(available_indices, 
+                                         min(remaining, len(available_indices)))
+                
+                for idx in additional:
+                    if len(sampled_images) < num_samples:
+                        item = self.image_storage[idx]
+                        sampled_images.append(item['image'])
+                        sampled_labels.append(item['user_id'])
+        
+        # 5. 최종적으로 짝수로 조정
+        return self._ensure_even_count(sampled_images, sampled_labels)
+
+    def _ensure_even_count(self, images: List, labels: List) -> Tuple[List, List]:
+        """짝수개로 보장"""
+        if len(images) % 2 == 1 and len(images) > 0:
+            images.pop()
+            labels.pop()
+        
+        print(f"[Buffer] Sampled {len(images)} samples (even count ensured)")
+        return images, labels
+
+    def _remove_least_diverse_even(self):
+        """다양성 기반 삭제 - 짝수 유지"""
+        if len(self.image_storage) < 2:
+            return
+        
+        # 사용자별 그룹화
+        user_samples = defaultdict(list)
+        for i, item in enumerate(self.image_storage):
+            user_samples[item['user_id']].append(i)
+        
+        # 삭제 대상 선정
+        candidate_users = []
+        for user_id, indices in user_samples.items():
+            if user_id in self.priority_users or len(indices) < 2:
+                continue
+                
+            # 평균 다양성 계산
+            avg_div = self._calculate_user_average_diversity(indices)
+            candidate_users.append((user_id, indices, avg_div))
+        
+        if not candidate_users:
+            # 모든 사용자가 보호되거나 1개씩만 있음
+            # 가장 오래된 비우선순위 사용자 찾기
+            for user_id, indices in user_samples.items():
+                if user_id not in self.priority_users and len(indices) >= 2:
+                    candidate_users.append((user_id, indices, 1.0))
+                    break
+        
+        if not candidate_users:
+            print("[Buffer] No removable samples while maintaining even counts")
+            return
+        
+        # 가장 다양성 낮은 사용자 선택
+        candidate_users.sort(key=lambda x: x[2])
+        selected_user, indices, _ = candidate_users[0]
+        
+        # 삭제 개수 결정 (짝수 유지)
+        current_count = len(indices)
+        if current_count % 2 == 0:
+            # 짝수 → 2개 삭제
+            num_to_remove = 2
+        else:
+            # 홀수 → 1개 삭제 (짝수로)
+            num_to_remove = 1
+        
+        # 가장 유사한 샘플들 찾기
+        if num_to_remove == 1:
+            remove_indices = [self._find_most_redundant_single(indices)]
+        else:
+            remove_indices = self._find_most_similar_pair(indices)
+        
+        # 삭제 실행
+        for idx in sorted(remove_indices, reverse=True):
+            removed_id = self.image_storage[idx]['id']
+            del self.image_storage[idx]
+            del self.stored_embeddings[idx]
+            if removed_id in self.metadata:
+                del self.metadata[removed_id]
+        
+        print(f"[Buffer] Removed {num_to_remove} samples from user {selected_user} "
+              f"({current_count} → {current_count-num_to_remove})")
+        
+        self._rebuild_faiss_index()
+
+    def _find_most_redundant_single(self, indices: List[int]) -> int:
+        """가장 중복된 단일 샘플 찾기"""
+        max_avg_sim = -1
+        most_redundant = indices[0]
+        
+        for i, idx in enumerate(indices):
+            similarities = []
+            for j, other_idx in enumerate(indices):
+                if i != j:
+                    sim = self._compute_similarity_by_idx(idx, other_idx)
+                    similarities.append(sim)
+            
+            avg_sim = np.mean(similarities) if similarities else 0
+            if avg_sim > max_avg_sim:
+                max_avg_sim = avg_sim
+                most_redundant = idx
+        
+        return most_redundant
+
+    def _find_most_similar_pair(self, indices: List[int]) -> List[int]:
+        """가장 유사한 페어 찾기"""
+        max_sim = -1
+        best_pair = [indices[0], indices[1]] if len(indices) >= 2 else indices[:1]
+        
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                sim = self._compute_similarity_by_idx(indices[i], indices[j])
+                if sim > max_sim:
+                    max_sim = sim
+                    best_pair = [indices[i], indices[j]]
+        
+        return best_pair
+
+    def _compute_similarity_by_idx(self, idx1: int, idx2: int) -> float:
+        """인덱스로 유사도 계산"""
+        emb1 = torch.tensor(self.stored_embeddings[idx1])
+        emb2 = torch.tensor(self.stored_embeddings[idx2])
+        
+        similarity = F.cosine_similarity(
+            emb1.unsqueeze(0),
+            emb2.unsqueeze(0)
+        ).item()
+        
+        return similarity
+
+    def _calculate_user_average_diversity(self, indices: List[int]) -> float:
+        """사용자의 평균 다양성 계산"""
+        if len(indices) < 2:
+            return 1.0  # 높은 다양성으로 가정
+        
+        total_sim = 0
+        count = 0
+        
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                sim = self._compute_similarity_by_idx(indices[i], indices[j])
+                total_sim += sim
+                count += 1
+        
+        avg_sim = total_sim / count if count > 0 else 0
+        return 1 - avg_sim  # 다양성 = 1 - 유사도
 
     def add_priority_samples(self, user_ids: List[int], priority_weight: float = 2.0):
         """
@@ -335,55 +572,12 @@ class ReplayBuffer:
             'priority': user_id in self.priority_users
         }
         
+        # 현재 사용자의 샘플 수 확인
+        user_count = sum(1 for item in self.image_storage if item['user_id'] == user_id)
+        
         print(f"[Buffer] Stored sample {unique_id} for user {user_id}. "
-              f"Buffer: {len(self.image_storage)}/{self.buffer_size}")
-
-    def _remove_least_diverse(self):
-        """가장 중복되는 샘플 제거 - 🔥 우선순위 샘플 보호"""
-        if len(self.image_storage) < 2:
-            return
-        
-        # 각 샘플의 평균 유사도 계산
-        diversity_scores = []
-        
-        for i in range(len(self.image_storage)):
-            # 우선순위 샘플은 보호
-            if self.image_storage[i]['user_id'] in self.priority_users:
-                diversity_scores.append(-1.0)  # 낮은 점수로 보호
-                continue
-                
-            if FAISS_AVAILABLE and self.faiss_index:
-                query = self.stored_embeddings[i].reshape(1, -1)
-                similarities, _ = self.faiss_index.search(query, min(10, len(self.image_storage)))
-                avg_similarity = similarities[0][1:].mean()  # 자기 자신 제외
-            else:
-                avg_similarity = 0.0
-            
-            diversity_scores.append(avg_similarity)
-        
-        # 가장 유사도가 높은 (다양성이 낮은) 샘플 제거
-        valid_indices = [i for i, score in enumerate(diversity_scores) if score >= 0]
-        if not valid_indices:
-            # 모든 샘플이 보호됨 - 가장 오래된 비우선순위 샘플 제거
-            for i in range(len(self.image_storage)):
-                if self.image_storage[i]['user_id'] not in self.priority_users:
-                    remove_idx = i
-                    break
-        else:
-            remove_idx = max(valid_indices, key=lambda i: diversity_scores[i])
-        
-        removed_item = self.image_storage[remove_idx]
-        
-        # 제거
-        del self.image_storage[remove_idx]
-        del self.stored_embeddings[remove_idx]
-        if removed_item['id'] in self.metadata:
-            del self.metadata[removed_item['id']]
-        
-        # Faiss 인덱스 재구성
-        self._rebuild_faiss_index()
-        
-        print(f"[Buffer] Removed least diverse sample from user {removed_item['user_id']}")
+              f"Buffer: {len(self.image_storage)}/{self.buffer_size}, "
+              f"User samples: {user_count}")
 
     def update_hard_negative_ratio(self, ratio: float):
         """하드 네거티브 비율 업데이트"""
@@ -434,6 +628,8 @@ class ReplayBuffer:
             if FAISS_AVAILABLE:
                 faiss.normalize_L2(embedding_np)
             self.faiss_index.add_with_ids(embedding_np, np.array([item['id']]))
+        
+        print(f"[Buffer] Faiss index rebuilt with {len(self.stored_embeddings)} samples")
 
     def _setup_augmentation_transforms(self):
         """데이터 증강 설정"""
@@ -442,9 +638,16 @@ class ReplayBuffer:
     def get_statistics(self) -> Dict:
         """버퍼 통계 - 🔥 Loop Closure 정보 추가"""
         user_distribution = {}
+        even_count_users = 0
+        
         for item in self.image_storage:
             user_id = item['user_id']
             user_distribution[user_id] = user_distribution.get(user_id, 0) + 1
+        
+        # 짝수 개수를 가진 사용자 수 계산
+        for count in user_distribution.values():
+            if count % 2 == 0:
+                even_count_users += 1
         
         return {
             'total_samples': len(self.image_storage),
@@ -453,7 +656,9 @@ class ReplayBuffer:
             'buffer_utilization': len(self.image_storage) / self.buffer_size,
             'avg_samples_per_user': len(self.image_storage) / len(user_distribution) if user_distribution else 0,
             'priority_queue_size': len(self.priority_queue),
-            'priority_users': list(self.priority_users)
+            'priority_users': list(self.priority_users),
+            'even_count_users': even_count_users,
+            'even_count_percentage': even_count_users / len(user_distribution) if user_distribution else 0
         }
 
     def _save_state(self):
@@ -464,14 +669,22 @@ class ReplayBuffer:
             'metadata': self.metadata,
             'feature_dim': self.feature_dimension,
             'priority_queue': self.priority_queue,
-            'priority_users': list(self.priority_users)
+            'priority_users': list(self.priority_users),
+            'buffer_config': {
+                'max_size': self.buffer_size,
+                'samples_per_user_limit': self.samples_per_user_limit,
+                'similarity_threshold': self.similarity_threshold,
+                'hard_negative_ratio': self.hard_negative_ratio
+            }
         }
         
         with open(self.state_file, 'wb') as f:
             pickle.dump(save_data, f)
         
+        stats = self.get_statistics()
         print(f"[Buffer] State saved: {len(self.image_storage)} samples, "
-              f"{len(self.priority_queue)} priority items")
+              f"{len(self.priority_queue)} priority items, "
+              f"{stats['even_count_percentage']:.1%} even count users")
 
     def _load_state(self):
         """상태 로드 - 🔥 우선순위 정보 포함"""
@@ -488,10 +701,18 @@ class ReplayBuffer:
             self.priority_queue = save_data.get('priority_queue', [])
             self.priority_users = set(save_data.get('priority_users', []))
             
+            # 설정 복원
+            buffer_config = save_data.get('buffer_config', {})
+            if buffer_config:
+                self.hard_negative_ratio = buffer_config.get('hard_negative_ratio', 0.3)
+            
             if self.image_storage:
                 self._rebuild_faiss_index()
             
+            stats = self.get_statistics()
             print(f"[Buffer] State loaded: {len(self.image_storage)} samples, "
-                  f"{len(self.priority_queue)} priority items")
+                  f"{len(self.priority_queue)} priority items, "
+                  f"{stats['even_count_percentage']:.1%} even count users")
         except Exception as e:
             print(f"[Buffer] Failed to load state: {e}")
+            print("[Buffer] Starting with empty buffer")

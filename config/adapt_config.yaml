@@ -18,7 +18,7 @@ Dataset:
   height: 128
   width: 128
   use_angle_normalization: false
-  samples_per_label: 10
+  samples_per_label: 10 # 10 pairs = 20 images per user
   train_set_file: "/content/drive/MyDrive/CCNet_OKD_CD/data/train_Tongji.txt"
   test_set_file: "/content/drive/MyDrive/CCNet_OKD_CD/data/test_Tongji.txt"
   dataset_path: null
@@ -29,7 +29,7 @@ PalmRecognizer:
   num_classes: 600
   com_weight: 0.8
   feature_dimension: 2048
-  learning_rate: 0.001
+  learning_rate: 0.0001
   batch_size: 1024  # For compatibility
   load_weights_folder: "/content/drive/MyDrive/net_params1.pth"
   
@@ -50,10 +50,10 @@ ContinualLearner:
   replay_weight: 1.0
   new_data_weight: 1.0
   intermediate_save_frequency: 50
-  learning_rate: 0.001
+  learning_rate: 0.0001
   
   # 🔥 BATCH CONFIGURATION
-  training_batch_size: 32  # Total batch size for training
+  training_batch_size: 40  # Total batch size for training
   hard_negative_ratio: 0.3  # 30% of buffer samples are hard negatives
 
 # =================================================================
@@ -61,15 +61,15 @@ ContinualLearner:
 # =================================================================
 ReplayBuffer:
   maximize_diversity: true
-  max_buffer_size: 200
+  max_buffer_size: 400
   similarity_threshold: 0.85
   storage_path: "/content/drive/MyDrive/CL-CCNet_nodemode/results/replay_buffer/"  # 구글 드라이브로 변경
   feature_extraction_for_diversity: true
   enable_smart_sampling: true
   diversity_update_frequency: 10
   model_save_path: "/content/drive/MyDrive/CL-CCNet_nodemode/results/models"
-  samples_per_user_limit: 3
-  min_samples_new_user: 2  # 새 사용자는 2장 저장
+  samples_per_user_limit: 4 # Even number
+  min_samples_new_user: 2  # Even number
   use_faiss: true
 
 # Loss Configuration
@@ -102,8 +102,7 @@ UserNode:
   collision_threshold: 0.3  # 각도 거리 기준 (0~1)
   use_faiss_index: true
   max_images_per_user: 3  # 사용자당 최대 저장 이미지
-  max_samples_per_user: 10  # 사용자당 최대 임베딩 수
-  # PQ 압축 완전 제거
+  max_samples_per_user: 20  # 사용자당 최대 임베딩 수
   enable_compression: false
 
 # Loop Closure Configuration
