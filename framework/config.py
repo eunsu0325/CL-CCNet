@@ -93,6 +93,8 @@ class UserNodeConfig:
     collision_threshold: float = 0.5
     use_faiss_index: bool = True
     max_samples_per_user: int = 10
+    max_images_per_user: int = 3  # 🔥 추가
+    enable_compression: bool = False  # 🔥 추가
     
     def __post_init__(self):
         print(f"[Config] 🎯 User Node System:")
@@ -100,6 +102,8 @@ class UserNodeConfig:
         if self.enable_user_nodes:
             print(f"   Collision threshold: {self.collision_threshold}")
             print(f"   Max samples per user: {self.max_samples_per_user}")
+            print(f"   Max images per user: {self.max_images_per_user}")
+            print(f"   Compression: {self.enable_compression}")
 
 @dataclasses.dataclass
 class LoopClosureConfig:
@@ -171,3 +175,14 @@ class PathsConfig:
     results_path: str
     save_interval: int
     test_interval: int
+
+@dataclasses.dataclass
+class ExperimentConfig:
+    """실험 설정"""
+    config_file: Path
+    seed: int = 42
+    device: str = "cuda"
+    num_workers: int = 4
+    save_frequency: int = 50
+    log_frequency: int = 10
+    checkpoint_path: str = "./checkpoints"

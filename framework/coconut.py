@@ -1,4 +1,4 @@
-# framework/coconut.py - 정리된 버전
+# framework/coconut.py - 정리된 버전 (이미지 변환 오류 수정)
 
 """
 === COCONUT STAGE 2: CONTINUAL LEARNING ===
@@ -7,6 +7,7 @@
 - SupCon loss only
 - User Node system maintained
 - Clean and simple naming
+- Fixed image conversion for User Nodes
 """
 
 import torch
@@ -203,6 +204,52 @@ class CoconutSystem:
             self.node_manager = None
             print("[System] ⚠️ User Node system is DISABLED")
 
+    def _prepare_registration_image(self, sample_tensor):
+        """🔥 등록 이미지 준비 (안전한 변환)"""
+        try:
+            # 텐서를 numpy로 변환
+            image_np = sample_tensor.cpu().numpy()
+            
+            print(f"[System] Original image shape: {image_np.shape}")
+            print(f"[System] Original image dtype: {image_np.dtype}")
+            print(f"[System] Original image range: [{image_np.min():.3f}, {image_np.max():.3f}]")
+            
+            # 형태 확인 및 변환
+            if len(image_np.shape) == 3:
+                # (C, H, W) -> (H, W, C)
+                if image_np.shape[0] in [1, 3]:
+                    image_np = image_np.transpose(1, 2, 0)
+                    print(f"[System] Transposed to: {image_np.shape}")
+            
+            # 값 범위 정규화 (0-1 -> 0-255)
+            if image_np.dtype in [np.float32, np.float64]:
+                if image_np.max() <= 1.0:
+                    image_np = (image_np * 255).astype(np.uint8)
+                    print(f"[System] Normalized 0-1 to 0-255")
+                else:
+                    image_np = image_np.astype(np.uint8)
+                    print(f"[System] Converted to uint8")
+            
+            # 그레이스케일 처리 (3차원에서 마지막 차원이 1인 경우)
+            if len(image_np.shape) == 3 and image_np.shape[2] == 1:
+                image_np = image_np.squeeze(2)
+                print(f"[System] Squeezed to grayscale: {image_np.shape}")
+            
+            print(f"[System] Final image shape: {image_np.shape}")
+            print(f"[System] Final image dtype: {image_np.dtype}")
+            print(f"[System] Final image range: [{image_np.min()}, {image_np.max()}]")
+            
+            return image_np
+            
+        except Exception as e:
+            print(f"[System] ❌ Error preparing registration image: {e}")
+            print(f"[System] Input shape: {sample_tensor.shape}")
+            print(f"[System] Input type: {type(sample_tensor)}")
+            # 더미 이미지 생성
+            dummy_image = np.full((128, 128), 128, dtype=np.uint8)
+            print(f"[System] 🔧 Using dummy image: {dummy_image.shape}")
+            return dummy_image
+
     def process_label_batch(self, samples: List[torch.Tensor], user_id: int):
         """
         배치 단위 처리
@@ -234,9 +281,8 @@ class CoconutSystem:
         if self.user_nodes_enabled and self.node_manager:
             final_embeddings = self._extract_batch_features(samples)
             
-            # 첫 번째 이미지를 등록 이미지로 사용
-            registration_image = samples[0].cpu().numpy().transpose(1, 2, 0)
-            registration_image = (registration_image * 255).astype(np.uint8)
+            # 🔥 안전한 이미지 변환
+            registration_image = self._prepare_registration_image(samples[0])
             
             self.node_manager.add_user(user_id, final_embeddings, registration_image)
         
@@ -364,6 +410,37 @@ class CoconutSystem:
         self.predictor_net.eval()
         
         print(f"\n[Sync] 🔄 Weights synchronized at step {self.global_step}")
+
+    def verify_user(self, probe_image: torch.Tensor, top_k: int = 10) -> Dict:
+        """
+        🔥 사용자 인증 (User Node 기반)
+        
+        Returns:
+            인증 결과 딕셔너리
+        """
+        if not self.node_manager:
+            return {
+                'is_match': False,
+                'error': 'No node manager available'
+            }
+        
+        start_time = time.time()
+        
+        # 1. 프로브 이미지 특징 추출
+        self.predictor_net.eval()
+        with torch.no_grad():
+            if len(probe_image.shape) == 3:
+                probe_image = probe_image.unsqueeze(0)
+            probe_image = probe_image.to(self.device)
+            probe_feature = self.predictor_net.getFeatureCode(probe_image).squeeze(0)
+        
+        # 2. User Node Manager를 통한 인증
+        auth_result = self.node_manager.verify_user(probe_feature, top_k=top_k)
+        
+        # 3. 결과에 추가 정보 포함
+        auth_result['computation_time'] = time.time() - start_time
+        
+        return auth_result
 
     def run_experiment(self):
         """배치 기반 실험 실행"""
@@ -521,30 +598,39 @@ class CoconutSystem:
 
     def run_evaluation(self):
         """End-to-End 평가 실행"""
-        from evaluate_authentication import EndToEndEvaluator
-        
-        test_file = getattr(self.config.dataset, 'test_set_file', None)
-        if not test_file:
-            print("⚠️ No test file specified in config")
+        try:
+            from evaluation.eval_utils import CoconutEvaluator
+            
+            test_file = getattr(self.config.dataset, 'test_set_file', None)
+            if not test_file:
+                print("⚠️ No test file specified in config")
+                return None
+            
+            print("\n" + "="*80)
+            print("🔍 Starting End-to-End Authentication Evaluation")
+            print("="*80)
+            
+            # 평가기 생성
+            evaluator = CoconutEvaluator(
+                model=self.predictor_net,  # 동기화된 예측 모델 사용
+                node_manager=self.node_manager,
+                device=self.device
+            )
+            
+            # 평가 실행
+            results = evaluator.run_end_to_end_evaluation(
+                test_file_path=test_file,
+                batch_size=32,
+                save_results=True,
+                output_dir="./evaluation_results"
+            )
+            
+            return results
+            
+        except ImportError as e:
+            print(f"⚠️ Evaluation module not found: {e}")
+            print("📝 Skipping end-to-end evaluation")
             return None
-        
-        print("\n" + "="*80)
-        print("🔍 Starting End-to-End Authentication Evaluation")
-        print("="*80)
-        
-        # 평가기 생성
-        evaluator = EndToEndEvaluator(
-            model=self.predictor_net,  # 동기화된 예측 모델 사용
-            node_manager=self.node_manager,
-            test_file_path=test_file,
-            device=self.device
-        )
-        
-        # 평가 실행
-        results = evaluator.run_full_evaluation(
-            batch_size=32,
-            save_results=True,
-            output_dir="./evaluation_results"
-        )
-        
-        return results
+        except Exception as e:
+            print(f"❌ Error during evaluation: {e}")
+            return None

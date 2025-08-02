@@ -78,7 +78,7 @@ Loss:
   type: "SupConLoss"
 
 # Model Saving Configuration
-Model_saving:
+ModelSaving:
   final_save_path: "/content/drive/MyDrive/CL-CCNet_nodemode/CoCoNut_UserNode"
   intermediate_save_frequency: 100
   enable_intermediate_save: true
@@ -96,7 +96,7 @@ DataAugmentation:
   enable_noise: false
 
 # User Node Configuration
-User_node:
+UserNode:
   enable_user_nodes: true
   node_save_path: "/content/drive/MyDrive/CL-CCNet_nodemode/results/user_nodes"
   collision_threshold: 0.3  # 각도 거리 기준 (0~1)
@@ -107,7 +107,7 @@ User_node:
   enable_compression: false
 
 # Loop Closure Configuration
-Loop_closure:
+LoopClosure:
   enabled: true
   retraining_epochs: 5
   priority_weight: 2.0

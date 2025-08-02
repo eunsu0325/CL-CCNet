@@ -102,26 +102,62 @@ class UserNode:
         return similarity.item()
     
     def image_to_base64(self) -> Optional[str]:
-        """이미지를 base64 문자열로 변환"""
+        """이미지를 base64 문자열로 변환 (안전한 버전)"""
         if self.registration_image is None:
             return None
         
-        # BGR to RGB 변환 (OpenCV 이미지인 경우)
-        if len(self.registration_image.shape) == 3 and self.registration_image.shape[2] == 3:
-            rgb_image = cv2.cvtColor(self.registration_image, cv2.COLOR_BGR2RGB)
-        else:
-            rgb_image = self.registration_image
+        try:
+            # 이미지 데이터 정규화 및 타입 변환
+            image_array = self.registration_image
             
-        # PIL Image로 변환
-        pil_image = Image.fromarray(rgb_image)
-        
-        # Base64 인코딩
-        buffer = io.BytesIO()
-        # PNG 사용하여 무손실 압축 (원본 완벽 복원)
-        pil_image.save(buffer, format='PNG')
-        img_str = base64.b64encode(buffer.getvalue()).decode()
-        
-        return img_str
+            # 텐서인 경우 numpy로 변환
+            if hasattr(image_array, 'cpu'):
+                image_array = image_array.cpu().numpy()
+            
+            # 형태 확인 및 수정
+            if len(image_array.shape) == 3:
+                # (C, H, W) -> (H, W, C) 변환
+                if image_array.shape[0] in [1, 3]:  # 채널이 첫 번째 차원
+                    image_array = image_array.transpose(1, 2, 0)
+            elif len(image_array.shape) == 4:
+                # (1, C, H, W) -> (H, W, C) 변환
+                image_array = image_array.squeeze(0).transpose(1, 2, 0)
+            
+            # 값 범위 정규화 (0-1 -> 0-255)
+            if image_array.dtype == np.float32 or image_array.dtype == np.float64:
+                if image_array.max() <= 1.0:
+                    image_array = (image_array * 255).astype(np.uint8)
+                else:
+                    image_array = image_array.astype(np.uint8)
+            
+            # 그레이스케일 처리
+            if len(image_array.shape) == 3 and image_array.shape[2] == 1:
+                image_array = image_array.squeeze(2)  # (H, W, 1) -> (H, W)
+            
+            # 그레이스케일인 경우 L 모드로, 컬러인 경우 RGB 모드로
+            if len(image_array.shape) == 2:
+                pil_image = Image.fromarray(image_array, mode='L')
+            elif len(image_array.shape) == 3 and image_array.shape[2] == 3:
+                # BGR to RGB 변환 (OpenCV 이미지인 경우)
+                rgb_image = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(rgb_image, mode='RGB')
+            else:
+                # 예상치 못한 형태인 경우 기본 처리
+                print(f"[UserNode] Warning: Unexpected image shape {image_array.shape}, creating dummy image")
+                pil_image = Image.new('L', (64, 64), color=128)  # 64x64 회색 이미지
+            
+            # Base64 인코딩
+            buffer = io.BytesIO()
+            pil_image.save(buffer, format='PNG')
+            img_str = base64.b64encode(buffer.getvalue()).decode()
+            
+            return img_str
+            
+        except Exception as e:
+            print(f"[UserNode] Error converting image to base64: {e}")
+            print(f"[UserNode] Image shape: {getattr(self.registration_image, 'shape', 'unknown')}")
+            print(f"[UserNode] Image type: {type(self.registration_image)}")
+            return None
     
     def base64_to_image(self, base64_str: str):
         """base64 문자열을 이미지로 변환"""
