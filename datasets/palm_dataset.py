@@ -69,7 +69,7 @@ class MyDataset(data.Dataset):
 
         self.imside = imside # 128, 224
         self.chs = outchannels # 1, 3
-
+        self.return_raw = return_raw
         self.text_path = txt        
 
         self.transforms = transforms
@@ -107,59 +107,60 @@ class MyDataset(data.Dataset):
 
 
     def _read_txt_file(self):
-      self.images_path = []
-      self.images_label = []
+        self.images_path = []
+        self.images_label = []
 
-      txt_file = self.text_path
+        txt_file = self.text_path
 
-      with open(txt_file, 'r') as f:
-          lines = f.readlines()
-          
-      for line_num, line in enumerate(lines, 1):
-          line = line.strip()
-          if not line:  # 빈 줄 스킵
-              continue
-              
-          try:
-              item = line.split(' ')
-              if len(item) >= 2:  # 최소 2개 요소 확인
-                  self.images_path.append(item[0])
-                  self.images_label.append(item[1])
-              else:
-                  print(f"[Dataset] Skipping malformed line {line_num}: '{line}'")
-          except Exception as e:
-              print(f"[Dataset] Error on line {line_num}: {e}")
-              continue
-
+        with open(txt_file, 'r') as f:
+            lines = f.readlines()
+            
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line:  # 빈 줄 스킵
+                continue
+                
+            try:
+                item = line.split(' ')
+                if len(item) >= 2:  # 최소 2개 요소 확인
+                    self.images_path.append(item[0])
+                    self.images_label.append(item[1])
+                else:
+                    print(f"[Dataset] Skipping malformed line {line_num}: '{line}'")
+            except Exception as e:
+                print(f"[Dataset] Error on line {line_num}: {e}")
+                continue
 
     def __getitem__(self, index):
         img_path = self.images_path[index]
         label = self.images_label[index]
-        # print(img_path)
-        # print(img_path)
-
+        
+        # 같은 사람의 다른 이미지 찾기
         idx2 = np.random.choice(np.arange(len(self.images_label))[np.array(self.images_label) == label])
-
         if self.train == True:
             while(idx2 == index):
                 idx2 = np.random.choice(np.arange(len(self.images_label))[np.array(self.images_label) == label])
-                # img_path2 = self.images_path[idx2]
         else:
             idx2 = index
-
+            
         img_path2 = self.images_path[idx2]
-
-        data = Image.open(img_path).convert('L')     
-        data = self.transforms(data)    
-
-        data2 = Image.open(img_path2).convert('L')
-        data2 = self.transforms(data2)
-
-        data = [data,data2]
-        # print(data)
-        # print(label)
-        return data, int(label)#, img_path
+        
+        # 원본 이미지 로드
+        data_raw = Image.open(img_path).convert('L')
+        data2_raw = Image.open(img_path2).convert('L')
+        
+        # 변환 적용 (학습용)
+        data = self.transforms(data_raw)
+        data2 = self.transforms(data2_raw)
+        
+        # 원본 반환 옵션
+        if self.return_raw:
+            # 원본을 numpy 배열로 (시각화용)
+            raw_np1 = np.array(data_raw)
+            raw_np2 = np.array(data2_raw)
+            return [data, data2], int(label), [raw_np1, raw_np2]
+        else:
+            return [data, data2], int(label)
     
-
     def __len__(self):
         return len(self.images_path)

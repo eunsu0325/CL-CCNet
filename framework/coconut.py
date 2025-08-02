@@ -235,13 +235,16 @@ class CoconutSystem:
             dummy_image = np.full((128, 128), 128, dtype=np.uint8)
             return dummy_image
 
-    def process_label_batch(self, sample_pairs: List[Tuple[torch.Tensor, torch.Tensor]], user_id: int):
+    def process_label_batch(self, sample_pairs: List[Tuple[torch.Tensor, torch.Tensor]], 
+                        user_id: int,
+                        raw_images: List[Tuple[np.ndarray, np.ndarray]] = None):
         """
         배치 단위 처리 - CCNet 스타일
         
         Args:
-            sample_pairs: [(img1, img2), ...] 형태의 이미지 페어 리스트
+            sample_pairs: [(img1, img2), ...] 형태의 정규화된 이미지 페어
             user_id: 사용자 ID
+            raw_images: [(raw1, raw2), ...] 형태의 원본 이미지 페어
         """
         print(f"\n[Process] 🎯 Processing batch for User {user_id} ({len(sample_pairs)} pairs)")
         
@@ -269,17 +272,30 @@ class CoconutSystem:
         if self.user_nodes_enabled and self.node_manager:
             # 모든 이미지의 특징 추출
             all_embeddings = []
+            all_normalized_tensors = []  # 정규화된 텐서 수집
+            
             for img1, img2 in sample_pairs:
                 emb1 = self._extract_feature(img1)
                 emb2 = self._extract_feature(img2)
                 all_embeddings.extend([emb1, emb2])
+                
+                # 정규화된 텐서도 저장 (Loop Closure용)
+                all_normalized_tensors.extend([img1.cpu(), img2.cpu()])
             
             final_embeddings = torch.stack(all_embeddings)  # [20, feature_dim]
             
-            # 대표 이미지
-            registration_image = self._prepare_registration_image(sample_pairs[0][0])
+            # 원본 이미지는 시각화용
+            registration_image = None
+            if raw_images and len(raw_images) > 0:
+                registration_image = raw_images[0][0]  # 첫 번째 원본 이미지
             
-            self.node_manager.add_user(user_id, final_embeddings, registration_image)
+            # User Node 업데이트 (정규화된 텐서 포함)
+            self.node_manager.add_user(
+                user_id, 
+                final_embeddings, 
+                registration_image=registration_image,
+                normalized_tensors=all_normalized_tensors  # Loop Closure용
+            )
         
         # 4. 선별적 버퍼 저장 (짝수 유지)
         stored_count = self._store_to_buffer_even(sample_pairs, user_id)
@@ -292,13 +308,66 @@ class CoconutSystem:
         if self.global_step % self.config.continual_learner.sync_frequency == 0:
             self._sync_weights()
         
+        # 7. Loop Closure 체크 (옵션)
+        if self.loop_closure_enabled and self.global_step % self.loop_closure_config.check_frequency == 0:
+            self._check_loop_closure()
+        
         print(f"[Process] ✅ Completed: stored={stored_count}/{len(sample_pairs)*2}")
         
         return {
             'stored': stored_count,
             'total': len(sample_pairs) * 2
         }
-
+    def _check_loop_closure(self):
+        """Loop Closure 체크 및 실행"""
+        if not self.node_manager:
+            return
+        
+        print("\n[Loop Closure] Checking for candidates...")
+        
+        # Loop Closure 후보 찾기
+        candidates = self.node_manager.get_loop_closure_candidates(
+            similarity_threshold=self.loop_closure_config.similarity_threshold
+        )
+        
+        if not candidates:
+            print("[Loop Closure] No candidates found")
+            return
+        
+        print(f"[Loop Closure] Found {len(candidates)} candidate pairs")
+        
+        # 상위 K개만 처리
+        max_pairs = self.loop_closure_config.max_pairs_per_check
+        for user1, user2, similarity in candidates[:max_pairs]:
+            print(f"[Loop Closure] Processing pair: User {user1} <-> User {user2} (sim: {similarity:.3f})")
+            
+            # 두 사용자의 데이터 가져오기
+            loop_data = self.node_manager.get_loop_closure_data([user1, user2])
+            
+            if user1 in loop_data and user2 in loop_data:
+                # 정규화된 텐서들로 재학습
+                _, tensors1 = loop_data[user1]
+                _, tensors2 = loop_data[user2]
+                
+                # 재학습을 위한 배치 구성
+                combined_pairs = []
+                for t in tensors1[:5]:  # 각 사용자에서 최대 5개
+                    combined_pairs.append((t, t))  # 같은 이미지로 페어 구성
+                for t in tensors2[:5]:
+                    combined_pairs.append((t, t))
+                
+                # 재학습 실행
+                if combined_pairs:
+                    print(f"[Loop Closure] Retraining with {len(combined_pairs)} pairs")
+                    training_batch = self._construct_training_batch(
+                        sample_pairs=combined_pairs,
+                        user_id=-1  # 특별한 ID로 Loop Closure 표시
+                    )
+                    
+                    # 1 epoch만 학습
+                    loss_dict = self._train_step_ccnet_style(training_batch)
+                    print(f"[Loop Closure] Loss: {loss_dict['total']:.4f}")
+                    
     def _train_step_ccnet_style(self, batch_data: Dict) -> Dict[str, torch.Tensor]:
         """CCNet 스타일 학습 스텝"""
         sample_pairs = batch_data['sample_pairs']  # [(img1, img2), ...]
@@ -539,16 +608,18 @@ class CoconutSystem:
             if self.processed_users > 0 and user_id in self._get_processed_user_ids():
                 continue
             
-            # Get sample pairs for this user
+            # Get sample pairs with raw images
             sample_pairs = []
+            raw_images = []
+            
             for idx in user_indices[:self.samples_per_label]:
-                data, _ = dataset[idx]
-                # Use both images from dataset
+                data, _, raw_data = dataset[idx]  # 원본도 받음
                 sample_pairs.append((data[0], data[1]))
+                raw_images.append((raw_data[0], raw_data[1]))
             
             if len(sample_pairs) == self.samples_per_label:
-                # Process batch
-                results = self.process_label_batch(sample_pairs, user_id)
+                # Process batch with raw images
+                results = self.process_label_batch(sample_pairs, user_id, raw_images)
                 
                 # Save checkpoint periodically
                 if self.global_step % self.config.continual_learner.intermediate_save_frequency == 0:
