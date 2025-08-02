@@ -65,6 +65,10 @@ class CoconutSystem:
         self.user_node_config = getattr(config, 'user_node', None)
         self.user_nodes_enabled = self.user_node_config and self.user_node_config.enable_user_nodes
         
+        # Loop Closure configuration
+        self.loop_closure_config = getattr(config, 'loop_closure', None)
+        self.loop_closure_enabled = self.loop_closure_config and self.loop_closure_config.enabled
+        
         print(f"🔧 SYSTEM CONFIGURATION:")
         print(f"   Samples per label: {self.samples_per_label}")
         print(f"   Training batch size: {self.training_batch_size}")
@@ -193,6 +197,7 @@ class CoconutSystem:
             # UserNodeManager 생성
             node_config = self.user_node_config.__dict__.copy()
             node_config.pop('config_file', None)
+            node_config['feature_dimension'] = self.feature_dimension
             
             self.node_manager = UserNodeManager(
                 config=node_config,
@@ -309,7 +314,7 @@ class CoconutSystem:
             self._sync_weights()
         
         # 7. Loop Closure 체크 (옵션)
-        if self.loop_closure_enabled and self.global_step % self.loop_closure_config.check_frequency == 0:
+        if self.loop_closure_enabled and self.global_step % 10 == 0:
             self._check_loop_closure()
         
         print(f"[Process] ✅ Completed: stored={stored_count}/{len(sample_pairs)*2}")
@@ -318,6 +323,7 @@ class CoconutSystem:
             'stored': stored_count,
             'total': len(sample_pairs) * 2
         }
+    
     def _check_loop_closure(self):
         """Loop Closure 체크 및 실행"""
         if not self.node_manager:
@@ -327,7 +333,7 @@ class CoconutSystem:
         
         # Loop Closure 후보 찾기
         candidates = self.node_manager.get_loop_closure_candidates(
-            similarity_threshold=self.loop_closure_config.similarity_threshold
+            similarity_threshold=0.8
         )
         
         if not candidates:
@@ -336,8 +342,8 @@ class CoconutSystem:
         
         print(f"[Loop Closure] Found {len(candidates)} candidate pairs")
         
-        # 상위 K개만 처리
-        max_pairs = self.loop_closure_config.max_pairs_per_check
+        # 상위 2개만 처리 (시간 절약)
+        max_pairs = 2
         for user1, user2, similarity in candidates[:max_pairs]:
             print(f"[Loop Closure] Processing pair: User {user1} <-> User {user2} (sim: {similarity:.3f})")
             
@@ -351,9 +357,9 @@ class CoconutSystem:
                 
                 # 재학습을 위한 배치 구성
                 combined_pairs = []
-                for t in tensors1[:5]:  # 각 사용자에서 최대 5개
+                for t in tensors1[:3]:  # 각 사용자에서 최대 3개
                     combined_pairs.append((t, t))  # 같은 이미지로 페어 구성
-                for t in tensors2[:5]:
+                for t in tensors2[:3]:
                     combined_pairs.append((t, t))
                 
                 # 재학습 실행
@@ -508,7 +514,7 @@ class CoconutSystem:
                 if i != j:
                     sim = F.cosine_similarity(emb.unsqueeze(0), other_emb.unsqueeze(0)).item()
                     similarities.append(sim)
-            avg_sim = np.mean(similarities)
+            avg_sim = np.mean(similarities) if similarities else 0
             diversity_scores.append((i, avg_sim, img, emb))
         
         # 다양성이 높은 순으로 정렬 (유사도가 낮은 순)
@@ -590,9 +596,9 @@ class CoconutSystem:
         """배치 기반 실험 실행 - CCNet 스타일"""
         print(f"\n[System] Starting CCNet-style continual learning...")
         
-        # Load dataset
+        # Load dataset with return_raw=True for raw images
         cfg_dataset = self.config.dataset
-        dataset = MyDataset(txt=str(cfg_dataset.train_set_file), train=False)
+        dataset = MyDataset(txt=str(cfg_dataset.train_set_file), train=False, return_raw=True)  # 🔥 FIX
         
         # Group data by label
         grouped_data = self._group_data_by_label(dataset)
@@ -640,7 +646,10 @@ class CoconutSystem:
         grouped = defaultdict(list)
         
         for idx in range(len(dataset)):
-            _, label = dataset[idx]
+            if dataset.return_raw:
+                _, label, _ = dataset[idx]
+            else:
+                _, label = dataset[idx]
             user_id = label.item() if torch.is_tensor(label) else label
             grouped[user_id].append(idx)
         

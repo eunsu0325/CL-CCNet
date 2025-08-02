@@ -58,18 +58,18 @@ class MyDataset(data.Dataset):
     train: True for a training set, and False for a testing set
     imside: the image size of the output image [imside x imside]
     outchannels: 1 for grayscale image, and 3 for RGB image
+    return_raw: whether to return raw images for visualization
 
     OUTPUT::
     [batch, outchannels, imside, imside]
     '''
     
-    def __init__(self, txt, transforms=None, train=True, imside = 128, outchannels = 1):        
+    def __init__(self, txt, transforms=None, train=True, imside=128, outchannels=1, return_raw=False):        
 
         self.train = train
-
         self.imside = imside # 128, 224
         self.chs = outchannels # 1, 3
-        self.return_raw = return_raw
+        self.return_raw = return_raw  # 🔥 FIX: 매개변수로 받아서 초기화
         self.text_path = txt        
 
         self.transforms = transforms
@@ -102,9 +102,6 @@ class MyDataset(data.Dataset):
                     ])
 
         self._read_txt_file()
-
-
-
 
     def _read_txt_file(self):
         self.images_path = []
